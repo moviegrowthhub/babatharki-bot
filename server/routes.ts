@@ -132,7 +132,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Settings
   app.get("/api/settings", async (req, res) => {
-    const keys = ["upi_id", "welcome_msg", "bot_username"];
+    const keys = ["upi_id", "upi_name", "bitcoin_address", "bot_username", "welcome_msg"];
     const result: Record<string, string> = {};
     for (const key of keys) {
       const s = await storage.getSetting(key);

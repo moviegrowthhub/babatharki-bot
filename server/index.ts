@@ -141,12 +141,28 @@ async function seedData() {
     `);
     log("Seeded default plans.", "db");
   }
-  // Seed default UPI setting
-  const { rows: existingUpi } = await db.execute(sql`SELECT id FROM settings WHERE key='upi_id' LIMIT 1`);
-  if (existingUpi.length === 0) {
-    await db.execute(sql`INSERT INTO settings (key, value) VALUES ('upi_id', 'yourupi@bank')`);
+  // Seed default settings
+  const defaultSettings: Record<string, string> = {
+    "upi_id": "bs883653-2@oksbi",
+    "upi_name": "Bindar Singh",
+    "bitcoin_address": "bc1qe6q4g9gng3f9f3raezx4002yeuv3572v40acuc",
+    "bot_username": "",
+  };
+  for (const [key, value] of Object.entries(defaultSettings)) {
+    const { rows: existing } = await db.execute(sql`SELECT id FROM settings WHERE key=${key} LIMIT 1`);
+    if (existing.length === 0) {
+      await db.execute(sql`INSERT INTO settings (key, value) VALUES (${key}, ${value})`);
+    }
   }
 }
+
+// Prevent unhandled rejections from crashing the server
+process.on("unhandledRejection", (reason: any) => {
+  console.error("[Process] Unhandled rejection:", reason?.message || reason);
+});
+process.on("uncaughtException", (err: any) => {
+  console.error("[Process] Uncaught exception:", err?.message || err);
+});
 
 (async () => {
   try {
