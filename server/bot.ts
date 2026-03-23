@@ -1,12 +1,17 @@
 import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import { storage } from "./storage";
+import path from "path";
+import fs from "fs";
 
 let bot: TelegramBot | null = null;
 
 export function getBot(): TelegramBot | null {
   return bot;
 }
+
+// Track user state for multi-step flow (in-memory, resets on restart)
+const userStates: Map<string, { step: string; planId?: number; planName?: string; amount?: number; paymentMethod?: string }> = new Map();
 
 export async function initBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -19,343 +24,476 @@ export async function initBot() {
 
   try {
     bot = new TelegramBot(token, { polling: true });
-
-    bot.on("polling_error", (err) => {
-      console.error("[Bot] Polling error:", err.message);
-    });
-
+    bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
     console.log("[Bot] Started successfully.");
 
-    // /start command
+    // ─── /start ──────────────────────────────────────────────────────────────
     bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id;
       const userId = String(msg.from?.id);
       const firstName = msg.from?.first_name || "Friend";
-      const username = msg.from?.username;
+
+      userStates.delete(userId);
 
       const plans = await storage.getActivePlans();
-      const plansText = plans.length > 0
-        ? plans.map(p => `• *${p.name}* — ₹${p.price} / ${p.durationDays} days`).join("\n")
-        : "• No plans available yet.";
+      if (!plans.length) {
+        await bot!.sendMessage(chatId,
+          `🔥 *WELCOME TO VIP ZONE* 🔥\n\n👋 Hey *${firstName}*!\n\nNo plans available yet. Check back soon!`,
+          { parse_mode: "Markdown" }
+        );
+        return;
+      }
+
+      // Check existing membership
+      const channels = await storage.getChannels();
+      for (const ch of channels) {
+        const member = await storage.getMemberByUserAndChannel(userId, ch.channelId);
+        if (member && member.status === "active") {
+          const expiry = member.expiresAt
+            ? new Date(member.expiresAt).toLocaleDateString("en-IN")
+            : "Lifetime";
+          await bot!.sendMessage(chatId,
+            `✅ *You already have an active membership!*\n\n` +
+            `📦 Plan: *${member.planName || "VIP"}*\n` +
+            `📅 Expires: *${expiry}*\n\n` +
+            `To renew or upgrade, choose a plan below 👇`,
+            { parse_mode: "Markdown" }
+          );
+        }
+      }
 
       const welcomeText =
         `🔥 *WELCOME TO VIP ZONE* 🔥\n\n` +
         `👋 Hey *${firstName}*! Ready for premium access?\n\n` +
-        `✨ *What we offer:*\n` +
+        `✨ *What you get:*\n` +
         `🚀 Exclusive premium content\n` +
         `⚡ Lightning fast access\n` +
         `🔒 Secure & private community\n` +
         `💎 VIP member benefits\n\n` +
-        `📋 *Membership Plans:*\n${plansText}\n\n` +
-        `📋 *Quick Start:*\n` +
-        `1️⃣ Choose your perfect plan\n` +
-        `2️⃣ Pay via UPI\n` +
-        `3️⃣ Use /paid <txn\\_id> <plan\\_name> to submit payment\n\n` +
-        `⚠️ Example: /paid TXN123456 monthly\n` +
-        `📚 Need help? Use /help for all commands\n\n` +
-        `🎯 Ready to join the elite? 👇`;
+        `👇 *Select your plan to get started:*`;
 
-      const keyboard = {
-        inline_keyboard: [
-          [
-            { text: "📋 View Plans", callback_data: "view_plans" },
-            { text: "💰 Pay via UPI", callback_data: "pay_upi" },
-          ],
-          [
-            { text: "📊 My Status", callback_data: "my_status" },
-            { text: "❓ Help", callback_data: "help" },
-          ],
-        ],
-      };
+      const planButtons = plans.map(p => ([{
+        text: `${p.name} — ₹${p.price} (${p.durationDays}d)`,
+        callback_data: `select_plan:${p.id}`,
+      }]));
+
+      planButtons.push([{ text: "📊 My Status", callback_data: "my_status" }]);
 
       await bot!.sendMessage(chatId, welcomeText, {
         parse_mode: "Markdown",
-        reply_markup: keyboard,
+        reply_markup: { inline_keyboard: planButtons },
       });
     });
 
-    // /paid command
-    bot.onText(/\/paid (.+)/, async (msg, match) => {
-      const chatId = msg.chat.id;
-      const userId = String(msg.from?.id);
-      const username = msg.from?.username || "";
-      const firstName = msg.from?.first_name || "";
-      const args = match![1].trim().split(/\s+/);
-
-      if (args.length < 2) {
-        await bot!.sendMessage(
-          chatId,
-          "❌ *Wrong format!*\n\nUse: `/paid <txn_id> <plan_name>`\nExample: `/paid TXN123456 monthly`",
-          { parse_mode: "Markdown" }
-        );
-        return;
-      }
-
-      const txnId = args[0];
-      const planName = args.slice(1).join(" ");
-
-      const plans = await storage.getActivePlans();
-      const plan = plans.find(
-        (p) => p.name.toLowerCase() === planName.toLowerCase()
-      );
-
-      if (!plan) {
-        const planList = plans.map((p) => `• ${p.name}`).join("\n");
-        await bot!.sendMessage(
-          chatId,
-          `❌ *Plan not found!*\n\nAvailable plans:\n${planList}\n\nUse: \`/paid ${txnId} <plan_name>\``,
-          { parse_mode: "Markdown" }
-        );
-        return;
-      }
-
-      // Check duplicate txn
-      const existing = await storage.getPaymentByTxnId(txnId);
-      if (existing) {
-        await bot!.sendMessage(
-          chatId,
-          `⚠️ *Transaction ID already submitted!*\n\nTxn: \`${txnId}\` is already being processed.`,
-          { parse_mode: "Markdown" }
-        );
-        return;
-      }
-
-      await storage.createPayment({
-        telegramUserId: userId,
-        username,
-        firstName,
-        txnId,
-        planId: plan.id,
-        planName: plan.name,
-        amount: plan.price,
-        channelId: "",
-        status: "pending",
-      });
-
-      await bot!.sendMessage(
-        chatId,
-        `✅ *Payment Submitted!*\n\n` +
-          `📋 Txn ID: \`${txnId}\`\n` +
-          `📦 Plan: *${plan.name}*\n` +
-          `💰 Amount: ₹${plan.price}\n\n` +
-          `⏳ Your payment is under review. You'll get channel access once verified!\n\n` +
-          `Usually verified within 30 minutes.`,
-        { parse_mode: "Markdown" }
-      );
-
-      // Notify admin
-      if (adminId) {
-        try {
-          await bot!.sendMessage(
-            adminId,
-            `🔔 *New Payment Received!*\n\n` +
-              `👤 User: @${username || firstName} (ID: ${userId})\n` +
-              `📋 Txn ID: \`${txnId}\`\n` +
-              `📦 Plan: *${plan.name}*\n` +
-              `💰 Amount: ₹${plan.price}\n\n` +
-              `✅ Verify via dashboard or reply:\n` +
-              `/verify ${txnId}\n` +
-              `/reject ${txnId}`,
-            { parse_mode: "Markdown" }
-          );
-        } catch (e) {
-          console.error("[Bot] Failed to notify admin:", e);
-        }
-      }
-    });
-
-    // Admin /verify command
-    bot.onText(/\/verify (.+)/, async (msg, match) => {
-      const chatId = msg.chat.id;
-      const userId = String(msg.from?.id);
-      if (userId !== adminId) {
-        await bot!.sendMessage(chatId, "❌ Unauthorized.");
-        return;
-      }
-      const txnId = match![1].trim();
-      await handleVerify(txnId, chatId);
-    });
-
-    // Admin /reject command
-    bot.onText(/\/reject (.+)/, async (msg, match) => {
-      const chatId = msg.chat.id;
-      const userId = String(msg.from?.id);
-      if (userId !== adminId) {
-        await bot!.sendMessage(chatId, "❌ Unauthorized.");
-        return;
-      }
-      const txnId = match![1].trim();
-      const payment = await storage.getPaymentByTxnId(txnId);
-      if (!payment) {
-        await bot!.sendMessage(chatId, `❌ Payment not found: \`${txnId}\``, { parse_mode: "Markdown" });
-        return;
-      }
-      await storage.updatePaymentStatus(payment.id, "rejected", "Rejected by admin");
-      await bot!.sendMessage(chatId, `❌ Payment \`${txnId}\` rejected.`, { parse_mode: "Markdown" });
-      try {
-        await bot!.sendMessage(
-          Number(payment.telegramUserId),
-          `❌ *Payment Rejected*\n\nYour payment Txn ID \`${txnId}\` was rejected.\n\nPlease contact support if you believe this is a mistake.`,
-          { parse_mode: "Markdown" }
-        );
-      } catch (e) {}
-    });
-
-    // /status command
+    // ─── /status ─────────────────────────────────────────────────────────────
     bot.onText(/\/status/, async (msg) => {
-      const chatId = msg.chat.id;
-      const userId = String(msg.from?.id);
-      const channels = await storage.getChannels();
-      let found = false;
-      for (const ch of channels) {
-        const member = await storage.getMemberByUserAndChannel(userId, ch.channelId);
-        if (member) {
-          found = true;
-          const expiry = member.expiresAt
-            ? new Date(member.expiresAt).toLocaleDateString("en-IN")
-            : "Lifetime";
-          const statusEmoji = member.status === "active" ? "✅" : member.status === "expired" ? "❌" : "⏳";
-          await bot!.sendMessage(
-            chatId,
-            `📊 *Your Membership Status*\n\n` +
-              `Channel: *${ch.channelName}*\n` +
-              `Plan: *${member.planName || "N/A"}*\n` +
-              `Status: ${statusEmoji} *${member.status.toUpperCase()}*\n` +
-              `Expires: *${expiry}*`,
-            { parse_mode: "Markdown" }
-          );
-        }
-      }
-      if (!found) {
-        await bot!.sendMessage(
-          chatId,
-          "ℹ️ *No active membership found.*\n\nUse /start to get started!",
-          { parse_mode: "Markdown" }
-        );
-      }
+      await handleStatus(msg.chat.id, String(msg.from?.id));
     });
 
-    // /help command
+    // ─── /help ───────────────────────────────────────────────────────────────
     bot.onText(/\/help/, async (msg) => {
-      const chatId = msg.chat.id;
-      await bot!.sendMessage(
-        chatId,
-        `📚 *Available Commands:*\n\n` +
-          `/start — Welcome message & plans\n` +
-          `/paid <txn_id> <plan> — Submit payment\n` +
-          `/status — Check your membership\n` +
-          `/help — Show this help message\n\n` +
-          `*Examples:*\n` +
-          `\`/paid TXN123456 monthly\`\n` +
-          `\`/paid UPI12345 weekly\``,
+      await bot!.sendMessage(msg.chat.id,
+        `📚 *Help Menu*\n\n` +
+        `/start — Choose a plan & subscribe\n` +
+        `/status — Check your membership status\n` +
+        `/help — Show this menu\n\n` +
+        `*How to subscribe:*\n` +
+        `1️⃣ Use /start and pick a plan\n` +
+        `2️⃣ Pay via UPI or Bitcoin\n` +
+        `3️⃣ Send your UTR/reference number\n` +
+        `4️⃣ Wait for verification (usually < 5 min)\n` +
+        `5️⃣ Get your invite link automatically!\n\n` +
+        `📞 Need help? Contact the admin.`,
         { parse_mode: "Markdown" }
       );
     });
 
-    // Callback queries (inline buttons)
-    bot.on("callback_query", async (query) => {
-      const chatId = query.message?.chat.id;
-      const userId = String(query.from.id);
-      if (!chatId) return;
+    // ─── Admin commands ───────────────────────────────────────────────────────
+    bot.onText(/\/verify (.+)/, async (msg, match) => {
+      if (String(msg.from?.id) !== adminId) return;
+      await handleAdminVerify(match![1].trim(), msg.chat.id);
+    });
 
-      await bot!.answerCallbackQuery(query.id);
+    bot.onText(/\/reject (.+)/, async (msg, match) => {
+      if (String(msg.from?.id) !== adminId) return;
+      await handleAdminReject(match![1].trim(), msg.chat.id);
+    });
 
-      if (query.data === "view_plans") {
-        const plans = await storage.getActivePlans();
-        if (plans.length === 0) {
-          await bot!.sendMessage(chatId, "ℹ️ No plans available right now. Check back soon!");
+    bot.onText(/\/stats/, async (msg) => {
+      if (String(msg.from?.id) !== adminId) return;
+      const allMembers = await storage.getMembers();
+      const allPayments = await storage.getPayments();
+      const active = allMembers.filter(m => m.status === "active").length;
+      const pending = allPayments.filter(p => p.status === "pending").length;
+      const revenue = allPayments.filter(p => p.status === "verified").reduce((s, p) => s + (p.amount || 0), 0);
+      await bot!.sendMessage(msg.chat.id,
+        `📊 *Bot Stats*\n\n` +
+        `👥 Total Members: *${allMembers.length}*\n` +
+        `✅ Active: *${active}*\n` +
+        `⏳ Pending Payments: *${pending}*\n` +
+        `💰 Total Revenue: *₹${revenue}*`,
+        { parse_mode: "Markdown" }
+      );
+    });
+
+    // ─── Text messages (UTR capture) ─────────────────────────────────────────
+    bot.on("message", async (msg) => {
+      if (msg.text?.startsWith("/")) return; // skip commands
+      const chatId = msg.chat.id;
+      const userId = String(msg.from?.id);
+      const state = userStates.get(userId);
+
+      if (state?.step === "awaiting_utr") {
+        const utr = msg.text?.trim();
+        if (!utr || utr.length < 6) {
+          await bot!.sendMessage(chatId,
+            "❌ Please send a valid UTR/Reference number (usually 12 digits shown in your payment app)."
+          );
           return;
         }
-        const text =
-          `💎 *VIP Membership Plans*\n\n` +
-          plans
-            .map(
-              (p) =>
-                `📦 *${p.name}*\n` +
-                `   💰 Price: ₹${p.price}\n` +
-                `   ⏱ Duration: ${p.durationDays} days\n` +
-                (p.description ? `   📝 ${p.description}\n` : "")
-            )
-            .join("\n") +
-          `\nPay via UPI then use:\n\`/paid <txn_id> <plan_name>\``;
-        await bot!.sendMessage(chatId, text, { parse_mode: "Markdown" });
-      } else if (query.data === "pay_upi") {
-        const upiSetting = await storage.getSetting("upi_id");
-        const upiId = upiSetting?.value || "your-upi@bank";
-        await bot!.sendMessage(
-          chatId,
-          `💰 *Pay via UPI*\n\n` +
-            `UPI ID: \`${upiId}\`\n\n` +
-            `After payment, send:\n\`/paid <txn_id> <plan_name>\`\n\n` +
-            `Example: \`/paid TXN123456 monthly\``,
-          { parse_mode: "Markdown" }
-        );
-      } else if (query.data === "my_status") {
-        const channels = await storage.getChannels();
-        let found = false;
-        for (const ch of channels) {
-          const member = await storage.getMemberByUserAndChannel(userId, ch.channelId);
-          if (member) {
-            found = true;
-            const expiry = member.expiresAt
-              ? new Date(member.expiresAt).toLocaleDateString("en-IN")
-              : "Lifetime";
-            const statusEmoji = member.status === "active" ? "✅" : "❌";
-            await bot!.sendMessage(
-              chatId,
-              `📊 *Your Status*\n\nChannel: *${ch.channelName}*\nPlan: *${member.planName || "N/A"}*\nStatus: ${statusEmoji} *${member.status.toUpperCase()}*\nExpires: *${expiry}*`,
-              { parse_mode: "Markdown" }
-            );
-          }
-        }
-        if (!found) {
-          await bot!.sendMessage(chatId, "ℹ️ No active membership. Use /start to subscribe!");
-        }
-      } else if (query.data === "help") {
-        await bot!.sendMessage(
-          chatId,
-          `📚 *Commands:*\n/start — Welcome\n/paid <txn> <plan> — Submit payment\n/status — Your membership\n/help — Help`,
-          { parse_mode: "Markdown" }
-        );
+        await submitPayment(chatId, userId, msg.from?.username || "", msg.from?.first_name || "", utr, state);
+        userStates.delete(userId);
       }
     });
 
-    // Cron: Check expired members every hour
+    // ─── Callback queries ─────────────────────────────────────────────────────
+    bot.on("callback_query", async (query) => {
+      try {
+      const chatId = query.message?.chat.id;
+      const msgId = query.message?.message_id;
+      const userId = String(query.from.id);
+      const firstName = query.from.first_name || "Friend";
+      const username = query.from.username || "";
+      if (!chatId) return;
+      await bot!.answerCallbackQuery(query.id);
+
+      const data = query.data || "";
+
+      // ── Plan selection ──
+      if (data.startsWith("select_plan:")) {
+        const planId = parseInt(data.split(":")[1]);
+        const plan = await storage.getPlanById(planId);
+        if (!plan) {
+          await bot!.sendMessage(chatId, "❌ Plan not found. Use /start to try again.");
+          return;
+        }
+
+        userStates.set(userId, { step: "select_payment", planId: plan.id, planName: plan.name, amount: plan.price });
+
+        await bot!.sendMessage(chatId,
+          `💎 *${plan.name} Plan Selected*\n\n` +
+          `💰 Amount: *₹${plan.price}*\n` +
+          `⏱ Duration: *${plan.durationDays} days*\n\n` +
+          `Choose your payment method:`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🏦 Pay via UPI", callback_data: `pay_upi:${planId}` }],
+                [{ text: "₿ Pay via Bitcoin", callback_data: `pay_btc:${planId}` }],
+                [{ text: "◀ Back", callback_data: "back_plans" }],
+              ],
+            },
+          }
+        );
+      }
+
+      // ── UPI Payment ──
+      else if (data.startsWith("pay_upi:")) {
+        const planId = parseInt(data.split(":")[1]);
+        const plan = await storage.getPlanById(planId);
+        if (!plan) return;
+
+        const upiSetting = await storage.getSetting("upi_id");
+        const upiId = upiSetting?.value || "bs883653-2@oksbi";
+        const upiNameSetting = await storage.getSetting("upi_name");
+        const upiName = upiNameSetting?.value || "Bindar Singh";
+
+        userStates.set(userId, { step: "awaiting_utr", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: "upi" });
+
+        const upiCaption =
+          `💳 *UPI Payment*\n\n` +
+          `📦 Plan: *${plan.name}*\n` +
+          `💰 Pay Exactly: *₹${plan.price}*\n\n` +
+          `🏦 UPI ID: \`${upiId}\`\n` +
+          `👤 Name: *${upiName}*\n\n` +
+          `📱 Scan the QR code or manually enter the UPI ID above in any UPI app (GPay, PhonePe, Paytm)\n\n` +
+          `After paying, tap the button below 👇`;
+
+        const upiButtons = {
+          inline_keyboard: [
+            [{ text: "✅ I've Paid — Enter UTR Number", callback_data: `confirm_paid:${planId}:upi` }],
+            [{ text: "◀ Back", callback_data: "back_plans" }],
+          ],
+        };
+
+        // Send QR image
+        const qrPath = path.join(process.cwd(), "client", "public", "upi-qr.jpg");
+        try {
+          if (fs.existsSync(qrPath)) {
+            await bot!.sendPhoto(chatId, qrPath, {
+              caption: upiCaption,
+              parse_mode: "Markdown",
+              reply_markup: upiButtons,
+            });
+          } else {
+            await bot!.sendMessage(chatId, upiCaption, {
+              parse_mode: "Markdown",
+              reply_markup: upiButtons,
+            });
+          }
+        } catch (e: any) {
+          console.error("[Bot] sendPhoto error:", e.message);
+          await bot!.sendMessage(chatId, upiCaption, {
+            parse_mode: "Markdown",
+            reply_markup: upiButtons,
+          });
+        }
+      }
+
+      // ── Bitcoin Payment ──
+      else if (data.startsWith("pay_btc:")) {
+        const planId = parseInt(data.split(":")[1]);
+        const plan = await storage.getPlanById(planId);
+        if (!plan) return;
+
+        const btcSetting = await storage.getSetting("bitcoin_address");
+        const btcAddress = btcSetting?.value || "bc1qe6q4g9gng3f9f3raezx4002yeuv3572v40acuc";
+
+        userStates.set(userId, { step: "awaiting_utr", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: "bitcoin" });
+
+        await bot!.sendMessage(chatId,
+          `₿ *Bitcoin Payment*\n\n` +
+          `📦 Plan: *${plan.name}*\n\n` +
+          `📬 *BTC Address:*\n\`${btcAddress}\`\n\n` +
+          `⚠️ Send the equivalent BTC for ₹${plan.price}\n` +
+          `(Check current BTC/INR rate before sending)\n\n` +
+          `After sending, tap below and send your *Transaction Hash*:`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "✅ I've Paid — Enter TX Hash", callback_data: `confirm_paid:${planId}:bitcoin` }],
+                [{ text: "◀ Back", callback_data: "back_plans" }],
+              ],
+            },
+          }
+        );
+      }
+
+      // ── Confirm paid → ask for UTR ──
+      else if (data.startsWith("confirm_paid:")) {
+        const parts = data.split(":");
+        const planId = parseInt(parts[1]);
+        const method = parts[2] || "upi";
+        const plan = await storage.getPlanById(planId);
+        if (!plan) return;
+
+        userStates.set(userId, { step: "awaiting_utr", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: method });
+
+        const label = method === "bitcoin" ? "Transaction Hash (TX ID)" : "UTR / Reference Number";
+        await bot!.sendMessage(chatId,
+          `📨 *Please send your ${label}*\n\n` +
+          `This is shown in your payment app after a successful payment.\n\n` +
+          `*For UPI:* Open GPay/PhonePe → Transaction History → copy the 12-digit UTR\n` +
+          `*For Bitcoin:* Copy the Transaction ID from your wallet\n\n` +
+          `Just type/paste it below 👇`,
+          { parse_mode: "Markdown" }
+        );
+      }
+
+      // ── Back to plans ──
+      else if (data === "back_plans") {
+        userStates.delete(userId);
+        const plans = await storage.getActivePlans();
+        const planButtons = plans.map(p => ([{
+          text: `${p.name} — ₹${p.price} (${p.durationDays}d)`,
+          callback_data: `select_plan:${p.id}`,
+        }]));
+        planButtons.push([{ text: "📊 My Status", callback_data: "my_status" }]);
+        await bot!.sendMessage(chatId,
+          `👇 *Select your plan:*`,
+          { parse_mode: "Markdown", reply_markup: { inline_keyboard: planButtons } }
+        );
+      }
+
+      // ── My Status ──
+      else if (data === "my_status") {
+        await handleStatus(chatId, userId);
+      }
+
+      // ── Admin inline verification ──
+      else if (data.startsWith("admin_verify:")) {
+        if (userId !== adminId) return;
+        const paymentId = parseInt(data.split(":")[1]);
+        await verifyPaymentAndAddMember(paymentId, chatId);
+      }
+
+      else if (data.startsWith("admin_reject:")) {
+        if (userId !== adminId) return;
+        const paymentId = parseInt(data.split(":")[1]);
+        const payment = await storage.getPaymentById(paymentId);
+        if (!payment) return;
+        await storage.updatePaymentStatus(payment.id, "rejected", "Rejected by admin");
+        await bot!.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
+        await bot!.sendMessage(chatId, `❌ Payment #${payment.id} rejected.`);
+        try {
+          await bot!.sendMessage(Number(payment.telegramUserId),
+            `❌ *Payment Rejected*\n\nTxn: \`${payment.txnId}\`\nPlease contact the admin if you believe this is an error.`,
+            { parse_mode: "Markdown" }
+          );
+        } catch (e) {}
+      }
+      } catch (cbErr: any) {
+        console.error("[Bot] Callback handler error:", cbErr?.message || cbErr);
+      }
+    });
+
+    // ─── Cron: Auto-expire every hour ────────────────────────────────────────
     cron.schedule("0 * * * *", async () => {
       console.log("[Cron] Checking expired members...");
       await expireMembers();
     });
 
-    // Also run on start
-    setTimeout(expireMembers, 5000);
+    // Also run 10s after start
+    setTimeout(expireMembers, 10000);
+
   } catch (err) {
     console.error("[Bot] Failed to initialize:", err);
   }
 }
 
+// ── Submit payment (after UTR capture) ────────────────────────────────────────
+async function submitPayment(
+  chatId: number,
+  userId: string,
+  username: string,
+  firstName: string,
+  utr: string,
+  state: { planId?: number; planName?: string; amount?: number; paymentMethod?: string }
+) {
+  const adminId = process.env.TELEGRAM_ADMIN_ID;
+
+  // Check duplicate UTR
+  const existing = await storage.getPaymentByTxnId(utr);
+  if (existing) {
+    await bot!.sendMessage(chatId,
+      `⚠️ *This UTR/TXN has already been submitted!*\n\nIf you need help, contact the admin.`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const channels = await storage.getChannels();
+  const channel = channels.find(c => c.isActive);
+
+  const payment = await storage.createPayment({
+    telegramUserId: userId,
+    username,
+    firstName,
+    txnId: utr,
+    planId: state.planId,
+    planName: state.planName,
+    amount: state.amount,
+    channelId: channel?.channelId || "",
+    status: "pending",
+  });
+
+  await bot!.sendMessage(chatId,
+    `✅ *Payment Submitted Successfully!*\n\n` +
+    `📋 Ref: \`${utr}\`\n` +
+    `📦 Plan: *${state.planName}*\n` +
+    `💰 Amount: ₹${state.amount}\n` +
+    `🏦 Method: ${state.paymentMethod === "bitcoin" ? "Bitcoin" : "UPI"}\n\n` +
+    `⏳ *Verification in progress...*\n` +
+    `You'll receive your channel invite link automatically once verified!\n\n` +
+    `Usually takes less than 5 minutes.`,
+    { parse_mode: "Markdown" }
+  );
+
+  // Notify admin with quick action buttons
+  if (adminId) {
+    try {
+      await bot!.sendMessage(Number(adminId),
+        `🔔 *New Payment Received!*\n\n` +
+        `👤 User: ${firstName}${username ? ` (@${username})` : ""}\n` +
+        `🆔 User ID: \`${userId}\`\n` +
+        `📋 ${state.paymentMethod === "bitcoin" ? "TX Hash" : "UTR"}: \`${utr}\`\n` +
+        `📦 Plan: *${state.planName}* — ₹${state.amount}\n` +
+        `🏦 Method: ${state.paymentMethod === "bitcoin" ? "Bitcoin" : "UPI"}\n` +
+        `⏰ ${new Date().toLocaleString("en-IN")}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✅ Verify & Add", callback_data: `admin_verify:${payment.id}` },
+              { text: "❌ Reject", callback_data: `admin_reject:${payment.id}` },
+            ]],
+          },
+        }
+      );
+    } catch (e) {
+      console.error("[Bot] Failed to notify admin:", e);
+    }
+  }
+}
+
+// ── Status handler ────────────────────────────────────────────────────────────
+async function handleStatus(chatId: number, userId: string) {
+  const channels = await storage.getChannels();
+  let found = false;
+  for (const ch of channels) {
+    const member = await storage.getMemberByUserAndChannel(userId, ch.channelId);
+    if (member) {
+      found = true;
+      const expiry = member.expiresAt
+        ? new Date(member.expiresAt).toLocaleDateString("en-IN")
+        : "Lifetime";
+      const daysLeft = member.expiresAt
+        ? Math.ceil((new Date(member.expiresAt).getTime() - Date.now()) / 86400000)
+        : null;
+      const statusEmoji = member.status === "active" ? "✅" : member.status === "expired" ? "❌" : "⏳";
+      await bot!.sendMessage(chatId,
+        `📊 *Your Membership*\n\n` +
+        `Channel: *${ch.channelName}*\n` +
+        `Plan: *${member.planName || "VIP"}*\n` +
+        `Status: ${statusEmoji} *${member.status.toUpperCase()}*\n` +
+        `Expires: *${expiry}*\n` +
+        (daysLeft !== null ? `Days Left: *${daysLeft > 0 ? daysLeft : 0}*\n` : "") +
+        `\n${member.status === "expired" ? "🔄 Use /start to renew!" : "Keep enjoying VIP access! 🎉"}`,
+        { parse_mode: "Markdown" }
+      );
+    }
+  }
+  if (!found) {
+    await bot!.sendMessage(chatId,
+      `ℹ️ *No active membership found.*\n\nUse /start to subscribe!`,
+      { parse_mode: "Markdown" }
+    );
+  }
+}
+
+// ── Expire members ─────────────────────────────────────────────────────────────
 async function expireMembers() {
   const expired = await storage.getExpiredActiveMembers();
   for (const member of expired) {
     await storage.updateMemberStatus(member.id, "expired");
-    console.log(`[Cron] Expired member: ${member.telegramUserId} in ${member.channelId}`);
-
-    // Kick from channel
+    console.log(`[Cron] Expired: ${member.telegramUserId} in ${member.channelId}`);
     if (bot) {
       const channels = await storage.getChannels();
-      const ch = channels.find((c) => c.channelId === member.channelId);
+      const ch = channels.find(c => c.channelId === member.channelId);
       if (ch) {
         try {
           await bot.banChatMember(ch.channelId, Number(member.telegramUserId));
           await bot.unbanChatMember(ch.channelId, Number(member.telegramUserId));
-          console.log(`[Cron] Removed ${member.telegramUserId} from ${ch.channelName}`);
         } catch (e: any) {
-          console.error(`[Cron] Failed to remove ${member.telegramUserId}:`, e.message);
+          console.error(`[Cron] Remove failed: ${e.message}`);
         }
-        // Notify user
         try {
-          await bot.sendMessage(
-            Number(member.telegramUserId),
-            `⚠️ *Membership Expired*\n\nYour access to *${ch.channelName}* has expired.\n\nRenew with /start to continue enjoying VIP benefits!`,
+          await bot.sendMessage(Number(member.telegramUserId),
+            `⚠️ *Membership Expired!*\n\n` +
+            `Your access to *${ch.channelName}* has ended.\n\n` +
+            `🔄 Renew instantly with /start — choose a plan and pay via UPI!`,
             { parse_mode: "Markdown" }
           );
         } catch (e) {}
@@ -364,13 +502,18 @@ async function expireMembers() {
   }
 }
 
-export async function verifyPaymentAndAddMember(paymentId: number): Promise<boolean> {
+// ── Verify payment & add to channel ──────────────────────────────────────────
+export async function verifyPaymentAndAddMember(paymentId: number, adminChatId?: number): Promise<boolean> {
   const payment = await storage.getPaymentById(paymentId);
   if (!payment) return false;
+  if (payment.status === "verified") {
+    if (bot && adminChatId) await bot.sendMessage(adminChatId, "ℹ️ Already verified.");
+    return true;
+  }
 
   const plan = payment.planId ? await storage.getPlanById(payment.planId) : null;
   const channels = await storage.getChannels();
-  const channel = channels.find((c) => c.isActive);
+  const channel = channels.find(c => c.isActive) || channels[0];
 
   await storage.updatePaymentStatus(paymentId, "verified", undefined, new Date());
 
@@ -380,10 +523,10 @@ export async function verifyPaymentAndAddMember(paymentId: number): Promise<bool
 
     const existing = await storage.getMemberByUserAndChannel(payment.telegramUserId, channel.channelId);
     if (existing) {
-      // Extend existing membership
-      const newExpiry = existing.expiresAt && new Date(existing.expiresAt) > new Date()
-        ? new Date(new Date(existing.expiresAt).getTime() + plan.durationDays * 86400000)
-        : expiresAt;
+      const base = existing.expiresAt && new Date(existing.expiresAt) > new Date()
+        ? new Date(existing.expiresAt)
+        : new Date();
+      const newExpiry = new Date(base.getTime() + plan.durationDays * 86400000);
       await storage.updateMemberExpiry(existing.id, newExpiry, "active", plan.name);
     } else {
       await storage.createMember({
@@ -398,57 +541,67 @@ export async function verifyPaymentAndAddMember(paymentId: number): Promise<bool
       });
     }
 
-    // Send invite link
     if (bot) {
+      // Generate one-time invite link
       let inviteLink = channel.inviteLink;
-      if (!inviteLink) {
-        try {
-          const link = await bot.createChatInviteLink(channel.channelId, {
-            creates_join_request: false,
-            member_limit: 1,
-          });
-          inviteLink = link.invite_link;
-        } catch (e: any) {
-          console.error("[Bot] Failed to create invite link:", e.message);
-        }
+      try {
+        const link = await bot.createChatInviteLink(channel.channelId, {
+          creates_join_request: false,
+          member_limit: 1,
+          expire_date: Math.floor(Date.now() / 1000) + 86400, // 24h expiry
+        });
+        inviteLink = link.invite_link;
+      } catch (e: any) {
+        console.error("[Bot] Invite link error:", e.message);
       }
 
       try {
-        await bot.sendMessage(
-          Number(payment.telegramUserId),
-          `✅ *Payment Verified!*\n\n` +
-            `Welcome to VIP Zone, ${payment.firstName || "friend"}!\n\n` +
-            `📦 Plan: *${plan.name}*\n` +
-            `⏱ Valid for: *${plan.durationDays} days*\n\n` +
-            `🔗 *Join your channel:*\n${inviteLink || "Contact admin for link."}`,
+        await bot.sendMessage(Number(payment.telegramUserId),
+          `🎉 *Payment Verified! Welcome to VIP Zone!*\n\n` +
+          `📦 Plan: *${plan.name}*\n` +
+          `⏱ Duration: *${plan.durationDays} days*\n` +
+          `📅 Expires: *${new Date(expiresAt).toLocaleDateString("en-IN")}*\n\n` +
+          `🔗 *Your Private Channel Link:*\n${inviteLink || "Contact admin for link."}\n\n` +
+          `⚠️ This link is for you only — don't share it!`,
           { parse_mode: "Markdown" }
         );
       } catch (e: any) {
-        console.error("[Bot] Failed to message user:", e.message);
+        console.error("[Bot] Message user error:", e.message);
       }
     }
+  }
+
+  if (bot && adminChatId) {
+    await bot.sendMessage(adminChatId,
+      `✅ Payment #${paymentId} verified! Member added to channel.`
+    );
   }
 
   return true;
 }
 
-export async function handleVerify(txnId: string, adminChatId?: number) {
+// ── Admin helpers ─────────────────────────────────────────────────────────────
+async function handleAdminVerify(txnId: string, adminChatId: number) {
   const payment = await storage.getPaymentByTxnId(txnId);
   if (!payment) {
-    if (bot && adminChatId) {
-      await bot.sendMessage(adminChatId, `❌ Payment not found: \`${txnId}\``, { parse_mode: "Markdown" });
-    }
-    return false;
+    await bot!.sendMessage(adminChatId, `❌ Not found: \`${txnId}\``, { parse_mode: "Markdown" });
+    return;
   }
-  const success = await verifyPaymentAndAddMember(payment.id);
-  if (bot && adminChatId) {
-    await bot.sendMessage(
-      adminChatId,
-      success
-        ? `✅ Payment \`${txnId}\` verified! Member added.`
-        : `❌ Failed to verify \`${txnId}\`.`,
+  await verifyPaymentAndAddMember(payment.id, adminChatId);
+}
+
+async function handleAdminReject(txnId: string, adminChatId: number) {
+  const payment = await storage.getPaymentByTxnId(txnId);
+  if (!payment) {
+    await bot!.sendMessage(adminChatId, `❌ Not found: \`${txnId}\``, { parse_mode: "Markdown" });
+    return;
+  }
+  await storage.updatePaymentStatus(payment.id, "rejected", "Rejected by admin");
+  await bot!.sendMessage(adminChatId, `❌ Rejected: \`${txnId}\``, { parse_mode: "Markdown" });
+  try {
+    await bot!.sendMessage(Number(payment.telegramUserId),
+      `❌ *Payment Rejected*\n\nRef: \`${payment.txnId}\`\nContact admin for assistance.`,
       { parse_mode: "Markdown" }
     );
-  }
-  return success;
+  } catch (e) {}
 }
