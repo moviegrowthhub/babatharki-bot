@@ -1019,40 +1019,47 @@ async function submitPayment(
 
   // Notify admin
   if (adminId) {
+    const adminText =
+      `🔔 *New Payment Request!*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `👤 Name: *${firstName}*${username ? ` (@${username})` : ""}\n` +
+      `🆔 User ID: \`${userId}\`\n` +
+      `📋 ${state.paymentMethod === "bitcoin" ? "TX Hash" : "UTR"}: \`${utr}\`\n` +
+      `📦 Plan: *${state.planName}* — ₹${state.amount}\n` +
+      `🏦 Method: *${state.paymentMethod === "bitcoin" ? "Bitcoin" : "UPI"}*\n` +
+      `📸 Screenshot: ${state.screenshotFileId ? "✅ Attached ⬇️" : "❌ Not provided"}\n` +
+      `⏰ ${new Date().toLocaleString("en-IN")}\n` +
+      `━━━━━━━━━━━━━━━━━━━━`;
+
+    const adminButtons = {
+      inline_keyboard: [[
+        { text: "✅ Verify & Send Link", callback_data: `admin_verify:${payment.id}` },
+        { text: "❌ Reject", callback_data: `admin_reject:${payment.id}` },
+      ]],
+    };
+
+    // Step 1: Always send text notification first (guaranteed delivery)
     try {
-      const adminText =
-        `🔔 *New Payment Request!*\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `👤 Name: *${firstName}*${username ? ` (@${username})` : ""}\n` +
-        `🆔 User ID: \`${userId}\`\n` +
-        `📋 ${state.paymentMethod === "bitcoin" ? "TX Hash" : "UTR"}: \`${utr}\`\n` +
-        `📦 Plan: *${state.planName}* — ₹${state.amount}\n` +
-        `🏦 Method: *${state.paymentMethod === "bitcoin" ? "Bitcoin" : "UPI"}*\n` +
-        `📸 Screenshot: ${state.screenshotFileId ? "✅ Attached ⬇️" : "❌ Not provided"}\n` +
-        `⏰ ${new Date().toLocaleString("en-IN")}\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
+      await bot!.sendMessage(Number(adminId), adminText, {
+        parse_mode: "Markdown",
+        reply_markup: adminButtons,
+      });
+    } catch (e: any) {
+      console.error("[Bot] Failed to send admin text notification:", e.message);
+    }
 
-      const adminButtons = {
-        inline_keyboard: [[
-          { text: "✅ Verify & Send Link", callback_data: `admin_verify:${payment.id}` },
-          { text: "❌ Reject", callback_data: `admin_reject:${payment.id}` },
-        ]],
-      };
-
-      if (state.screenshotFileId) {
+    // Step 2: If screenshot exists, send it separately as photo
+    if (state.screenshotFileId) {
+      try {
         await bot!.sendPhoto(Number(adminId), state.screenshotFileId, {
-          caption: adminText,
+          caption: `📸 *Screenshot for Payment #${payment.id}*\n👤 ${firstName}${username ? ` @${username}` : ""} — ₹${state.amount}`,
           parse_mode: "Markdown",
           reply_markup: adminButtons,
         });
-      } else {
-        await bot!.sendMessage(Number(adminId), adminText, {
-          parse_mode: "Markdown",
-          reply_markup: adminButtons,
-        });
+      } catch (e: any) {
+        console.error("[Bot] Failed to send admin screenshot:", e.message);
+        // Screenshot failed but text was already sent — admin is still notified
       }
-    } catch (e) {
-      console.error("[Bot] Failed to notify admin:", e);
     }
   }
 }
