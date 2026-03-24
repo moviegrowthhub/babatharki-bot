@@ -542,13 +542,12 @@ export async function verifyPaymentAndAddMember(paymentId: number, adminChatId?:
     }
 
     if (bot) {
-      // Generate one-time invite link
+      // Generate invite link valid for the plan duration
       let inviteLink = channel.inviteLink;
       try {
         const link = await bot.createChatInviteLink(channel.channelId, {
           creates_join_request: false,
-          member_limit: 1,
-          expire_date: Math.floor(Date.now() / 1000) + 86400, // 24h expiry
+          expire_date: Math.floor(expiresAt.getTime() / 1000), // expires when membership expires
         });
         inviteLink = link.invite_link;
       } catch (e: any) {
@@ -561,8 +560,9 @@ export async function verifyPaymentAndAddMember(paymentId: number, adminChatId?:
           `📦 Plan: *${plan.name}*\n` +
           `⏱ Duration: *${plan.durationDays} days*\n` +
           `📅 Expires: *${new Date(expiresAt).toLocaleDateString("en-IN")}*\n\n` +
-          `🔗 *Your Private Channel Link:*\n${inviteLink || "Contact admin for link."}\n\n` +
-          `⚠️ This link is for you only — don't share it!`,
+          `🔗 *Join the Channel:*\n${inviteLink || "Contact admin for link."}\n\n` +
+          `✅ This link stays valid until your membership expires.\n` +
+          `⚠️ Do not share this link with others!`,
           { parse_mode: "Markdown" }
         );
       } catch (e: any) {
