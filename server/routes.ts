@@ -158,7 +158,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const channels = await storage.getChannels();
         const ch = channels.find(c => c.channelId === String(channelId));
         try {
-          const link = await bot.createChatInviteLink(String(channelId), { expire_date: Math.floor(expiresAt.getTime() / 1000) });
+          const link = await bot.createChatInviteLink(String(channelId), { expire_date: Math.floor(expiresAt.getTime() / 1000), member_limit: 1 });
           inviteLink = link.invite_link;
         } catch (e) {}
         await bot.sendMessage(Number(telegramUserId),
