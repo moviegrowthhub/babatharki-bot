@@ -111,6 +111,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ok = await verifyPaymentAndAddMember(id);
     res.json({ ok });
   });
+  // Get payment screenshot (proxied from Telegram)
+  app.get("/api/payments/:id/screenshot", async (req, res) => {
+    const id = parseInt(req.params.id);
+    const payment = await storage.getPaymentById(id);
+    if (!payment?.screenshotFileId) return res.status(404).json({ error: "No screenshot" });
+    const bot = getBot();
+    if (!bot) return res.status(503).json({ error: "Bot offline" });
+    try {
+      const fileLink = await bot.getFileLink(payment.screenshotFileId);
+      res.redirect(fileLink);
+    } catch (e: any) {
+      res.status(500).json({ error: "Failed to fetch screenshot" });
+    }
+  });
+
   app.post("/api/payments/:id/reject", async (req, res) => {
     const id = parseInt(req.params.id);
     const { note } = req.body;
