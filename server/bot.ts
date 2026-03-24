@@ -918,7 +918,7 @@ export async function initBot() {
           }
           let inviteLink = "";
           try {
-            const link = await bot!.createChatInviteLink(channel.channelId, { expire_date: Math.floor(expiresAt.getTime() / 1000) });
+            const link = await bot!.createChatInviteLink(channel.channelId, { expire_date: Math.floor(expiresAt.getTime() / 1000), member_limit: 1 });
             inviteLink = link.invite_link;
           } catch (e) {}
           await bot!.sendMessage(chatId,
@@ -1164,6 +1164,7 @@ export async function verifyPaymentAndAddMember(paymentId: number, adminChatId?:
         const link = await bot.createChatInviteLink(channel.channelId, {
           creates_join_request: false,
           expire_date: Math.floor(expiresAt.getTime() / 1000),
+          member_limit: 1,
         });
         inviteLink = link.invite_link;
       } catch (e: any) {
