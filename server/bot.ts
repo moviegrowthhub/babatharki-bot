@@ -20,6 +20,64 @@ const userStates: Map<string, {
   screenshotFileId?: string;
 }> = new Map();
 
+// ── Admin helper: send the main admin panel ───────────────────────────────────
+async function sendAdminPanel(chatId: number) {
+  if (!bot) return;
+  const allMembers = await storage.getMembers();
+  const allPayments = await storage.getPayments();
+  const active = allMembers.filter(m => m.status === "active").length;
+  const pending = allPayments.filter(p => p.status === "pending").length;
+  const revenue = allPayments.filter(p => p.status === "verified").reduce((s, p) => s + (p.amount || 0), 0);
+
+  await bot.sendMessage(chatId,
+    `🛡️ *Admin Control Panel*\n\n` +
+    `👥 Active Members: *${active}*\n` +
+    `⏳ Pending Payments: *${pending}*\n` +
+    `💰 Total Revenue: *₹${revenue}*\n\n` +
+    `_Select an action below:_`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "📊 Live Stats", callback_data: "admin_stats" }, { text: "⏳ Pending Payments", callback_data: "admin_pending" }],
+          [{ text: "👥 Active Members", callback_data: "admin_members" }, { text: "➕ Add Member", callback_data: "admin_addmember" }],
+          [{ text: "📢 Broadcast Message", callback_data: "admin_broadcast" }],
+        ],
+      },
+    }
+  );
+}
+
+// ── Admin helper: send stats ──────────────────────────────────────────────────
+async function sendAdminStats(chatId: number) {
+  if (!bot) return;
+  const allMembers = await storage.getMembers();
+  const allPayments = await storage.getPayments();
+  const active = allMembers.filter(m => m.status === "active").length;
+  const expired = allMembers.filter(m => m.status === "expired").length;
+  const banned = allMembers.filter(m => m.status === "banned").length;
+  const pending = allPayments.filter(p => p.status === "pending").length;
+  const verified = allPayments.filter(p => p.status === "verified").length;
+  const revenue = allPayments.filter(p => p.status === "verified").reduce((s, p) => s + (p.amount || 0), 0);
+  const today = allPayments.filter(p => p.status === "verified" && p.createdAt && new Date(p.createdAt).toDateString() === new Date().toDateString()).length;
+
+  await bot.sendMessage(chatId,
+    `📊 *Detailed Stats*\n\n` +
+    `👥 Total Members: *${allMembers.length}*\n` +
+    `✅ Active: *${active}*\n` +
+    `❌ Expired: *${expired}*\n` +
+    `🚫 Banned: *${banned}*\n\n` +
+    `💳 Payments Today: *${today}*\n` +
+    `⏳ Pending: *${pending}*\n` +
+    `✅ Verified Total: *${verified}*\n` +
+    `💰 Revenue: *₹${revenue}*`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: [[{ text: "◀ Back to Admin Panel", callback_data: "admin_menu" }]] },
+    }
+  );
+}
+
 export async function initBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const adminId = process.env.TELEGRAM_ADMIN_ID;
@@ -116,6 +174,11 @@ export async function initBot() {
     });
 
     // ─── Admin commands ───────────────────────────────────────────────────────
+    bot.onText(/\/admin/, async (msg) => {
+      if (String(msg.from?.id) !== adminId) return;
+      await sendAdminPanel(msg.chat.id);
+    });
+
     bot.onText(/\/verify (.+)/, async (msg, match) => {
       if (String(msg.from?.id) !== adminId) return;
       await handleAdminVerify(match![1].trim(), msg.chat.id);
@@ -128,28 +191,49 @@ export async function initBot() {
 
     bot.onText(/\/stats/, async (msg) => {
       if (String(msg.from?.id) !== adminId) return;
-      const allMembers = await storage.getMembers();
-      const allPayments = await storage.getPayments();
-      const active = allMembers.filter(m => m.status === "active").length;
-      const pending = allPayments.filter(p => p.status === "pending").length;
-      const revenue = allPayments.filter(p => p.status === "verified").reduce((s, p) => s + (p.amount || 0), 0);
-      await bot!.sendMessage(msg.chat.id,
-        `📊 *Bot Stats*\n\n` +
-        `👥 Total Members: *${allMembers.length}*\n` +
-        `✅ Active: *${active}*\n` +
-        `⏳ Pending Payments: *${pending}*\n` +
-        `💰 Total Revenue: *₹${revenue}*`,
-        { parse_mode: "Markdown" }
-      );
+      await sendAdminStats(msg.chat.id);
     });
 
-    // ─── Messages (screenshot + UTR capture) ─────────────────────────────────
+    // ─── Messages (screenshot + UTR + admin states) ──────────────────────────
     bot.on("message", async (msg) => {
       if (msg.text?.startsWith("/")) return; // skip commands
       const chatId = msg.chat.id;
       const userId = String(msg.from?.id);
       const state = userStates.get(userId);
       if (!state) return;
+
+      // ── Admin: Broadcast message ──
+      if (state.step === "admin_broadcast" && userId === adminId) {
+        const text = msg.text?.trim();
+        if (!text) return;
+        userStates.delete(userId);
+        const activeMembers = (await storage.getMembers()).filter(m => m.status === "active");
+        let sent = 0, failed = 0;
+        for (const m of activeMembers) {
+          try { await bot!.sendMessage(Number(m.telegramUserId), text, { parse_mode: "Markdown" }); sent++; }
+          catch (e) { failed++; }
+        }
+        await bot!.sendMessage(chatId,
+          `✅ *Broadcast sent!*\n\n📤 Sent: *${sent}*\n❌ Failed: *${failed}*`,
+          { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "◀ Back to Admin Panel", callback_data: "admin_menu" }]] } }
+        );
+        return;
+      }
+
+      // ── Admin: Add member — waiting for user ID ──
+      if (state.step === "admin_add_userid" && userId === adminId) {
+        const inputId = msg.text?.trim();
+        if (!inputId) return;
+        userStates.set(userId, { ...state, step: "admin_add_plan", screenshotFileId: inputId });
+        const plans = await storage.getActivePlans();
+        const planButtons = plans.map(p => ([{ text: `${p.name} — ₹${p.price} (${p.durationDays}d)`, callback_data: `admin_doaddmember:${inputId}:${p.id}` }]));
+        planButtons.push([{ text: "◀ Cancel", callback_data: "admin_menu" }]);
+        await bot!.sendMessage(chatId, `👤 User ID: \`${inputId}\`\n\nNow select a plan:`, {
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: planButtons },
+        });
+        return;
+      }
 
       // ── Step 1: Waiting for screenshot (photo) ──
       if (state.step === "awaiting_screenshot") {
@@ -410,6 +494,134 @@ export async function initBot() {
             { parse_mode: "Markdown" }
           );
         } catch (e) {}
+      }
+
+      // ── Admin panel menu ──
+      else if (data === "admin_menu") {
+        if (userId !== adminId) return;
+        await sendAdminPanel(chatId);
+      }
+
+      else if (data === "admin_stats") {
+        if (userId !== adminId) return;
+        await sendAdminStats(chatId);
+      }
+
+      else if (data === "admin_pending") {
+        if (userId !== adminId) return;
+        const allPayments = await storage.getPayments();
+        const pending = allPayments.filter(p => p.status === "pending");
+        if (!pending.length) {
+          await bot!.sendMessage(chatId, `✅ No pending payments right now!`,
+            { reply_markup: { inline_keyboard: [[{ text: "◀ Back", callback_data: "admin_menu" }]] } }
+          );
+          return;
+        }
+        for (const p of pending.slice(0, 8)) {
+          await bot!.sendMessage(chatId,
+            `⏳ *Pending #${p.id}*\n` +
+            `👤 ${p.firstName || ""}${p.username ? ` @${p.username}` : ""}\n` +
+            `📋 ${(p as any).paymentMethod === "bitcoin" ? "TX Hash" : "UTR"}: \`${p.txnId}\`\n` +
+            `📦 ${p.planName} — ₹${p.amount}`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: { inline_keyboard: [[
+                { text: "✅ Verify", callback_data: `admin_verify:${p.id}` },
+                { text: "❌ Reject", callback_data: `admin_reject:${p.id}` },
+              ]] },
+            }
+          );
+        }
+        await bot!.sendMessage(chatId, `_Showing ${Math.min(pending.length, 8)} of ${pending.length} pending_`,
+          { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "◀ Back", callback_data: "admin_menu" }]] } }
+        );
+      }
+
+      else if (data === "admin_members") {
+        if (userId !== adminId) return;
+        const allMembers = await storage.getMembers();
+        const active = allMembers.filter(m => m.status === "active");
+        if (!active.length) {
+          await bot!.sendMessage(chatId, `ℹ️ No active members yet.`,
+            { reply_markup: { inline_keyboard: [[{ text: "◀ Back", callback_data: "admin_menu" }]] } }
+          );
+          return;
+        }
+        let text = `👥 *Active Members (${active.length})*\n\n`;
+        for (const m of active.slice(0, 15)) {
+          const days = m.expiresAt ? Math.ceil((new Date(m.expiresAt).getTime() - Date.now()) / 86400000) : null;
+          text += `• ${m.firstName || ""}${m.username ? ` @${m.username}` : ""} — ${m.planName || "N/A"} — ${days !== null ? `${days}d left` : "∞"}\n`;
+        }
+        if (active.length > 15) text += `\n_...and ${active.length - 15} more_`;
+        await bot!.sendMessage(chatId, text, {
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: [[{ text: "◀ Back", callback_data: "admin_menu" }]] },
+        });
+      }
+
+      else if (data === "admin_broadcast") {
+        if (userId !== adminId) return;
+        userStates.set(userId, { step: "admin_broadcast" });
+        await bot!.sendMessage(chatId,
+          `📢 *Broadcast Message*\n\nType the message to send to all active members.\nSupports *bold*, _italic_, \`code\`\n\nSend your message now:`,
+          { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "admin_cancel_state" }]] } }
+        );
+      }
+
+      else if (data === "admin_addmember") {
+        if (userId !== adminId) return;
+        userStates.set(userId, { step: "admin_add_userid" });
+        await bot!.sendMessage(chatId,
+          `➕ *Add Member Manually*\n\nSend the Telegram *User ID* of the person to add.\n\n_Tip: User can forward any message to @userinfobot to get their ID_`,
+          { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "admin_cancel_state" }]] } }
+        );
+      }
+
+      else if (data.startsWith("admin_doaddmember:")) {
+        if (userId !== adminId) return;
+        const parts = data.split(":");
+        const targetUserId = parts[1];
+        const planId = parseInt(parts[2]);
+        userStates.delete(userId);
+        const plan = await storage.getPlanById(planId);
+        if (!plan) return;
+        const channels = await storage.getChannels();
+        const channel = channels.find(c => c.isActive) || channels[0];
+        if (!channel) {
+          await bot!.sendMessage(chatId, "❌ No active channel configured.");
+          return;
+        }
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + plan.durationDays);
+        const existing = await storage.getMemberByUserAndChannel(targetUserId, channel.channelId);
+        if (existing) {
+          const base = existing.expiresAt && new Date(existing.expiresAt) > new Date() ? new Date(existing.expiresAt) : new Date();
+          const newExpiry = new Date(base.getTime() + plan.durationDays * 86400000);
+          await storage.updateMemberExpiry(existing.id, newExpiry, "active", plan.name);
+        } else {
+          await storage.createMember({ telegramUserId: targetUserId, username: "", firstName: "", channelId: channel.channelId, planId: plan.id, planName: plan.name, expiresAt, status: "active" });
+        }
+        let inviteLink = "";
+        try {
+          const link = await bot!.createChatInviteLink(channel.channelId, { expire_date: Math.floor(expiresAt.getTime() / 1000) });
+          inviteLink = link.invite_link;
+        } catch (e) {}
+        await bot!.sendMessage(chatId,
+          `✅ *Member Added!*\n\nUser ID: \`${targetUserId}\`\nPlan: *${plan.name}*\nExpires: *${expiresAt.toLocaleDateString("en-IN")}*`,
+          { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "◀ Back to Admin Panel", callback_data: "admin_menu" }]] } }
+        );
+        try {
+          await bot!.sendMessage(Number(targetUserId),
+            `🎉 *You've been added to VIP Zone!*\n\n📦 Plan: *${plan.name}*\n📅 Expires: *${expiresAt.toLocaleDateString("en-IN")}*\n\n${inviteLink ? `🔗 *Join now:*\n${inviteLink}` : "Contact admin for the invite link."}`,
+            { parse_mode: "Markdown" }
+          );
+        } catch (e) {}
+      }
+
+      else if (data === "admin_cancel_state") {
+        if (userId !== adminId) return;
+        userStates.delete(userId);
+        await sendAdminPanel(chatId);
       }
       } catch (cbErr: any) {
         console.error("[Bot] Callback handler error:", cbErr?.message || cbErr);
