@@ -1,13 +1,13 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { apiRequest } from "@/lib/queryClient";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { CheckCircle, XCircle, Clock, CreditCard, Search, Camera } from "lucide-react";
+import { CheckCircle, XCircle, Clock, CreditCard, Search, Camera, X, ZoomIn } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useState } from "react";
 import type { Payment } from "@shared/schema";
 
@@ -15,6 +15,8 @@ export default function Payments() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "pending" | "verified" | "rejected">("all");
+  const [screenshotPayment, setScreenshotPayment] = useState<Payment | null>(null);
+  const [imgError, setImgError] = useState(false);
 
   const { data: payments, isLoading } = useQuery<Payment[]>({
     queryKey: ["/api/payments"],
@@ -128,8 +130,8 @@ export default function Payments() {
                 }`}
               >
                 <CardContent className="p-4">
-                  <div className="flex items-center gap-4 flex-wrap">
-                    <div className={`p-2 rounded-md ${sc.color.split(" ")[0]} shrink-0`}>
+                  <div className="flex items-start gap-4 flex-wrap">
+                    <div className={`p-2 rounded-md ${sc.color.split(" ")[0]} shrink-0 mt-0.5`}>
                       <StatusIcon className={`w-4 h-4 ${sc.color.split(" ")[1]}`} />
                     </div>
                     <div className="flex-1 min-w-0">
@@ -148,20 +150,38 @@ export default function Payments() {
                         {(p as any).paymentMethod && (
                           <span className="bg-muted/50 px-1.5 py-0.5 rounded capitalize">{(p as any).paymentMethod}</span>
                         )}
-                        {(p as any).screenshotFileId && (
-                          <a
-                            href={`/api/payments/${p.id}/screenshot`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300"
-                            data-testid={`link-screenshot-${p.id}`}
-                          >
-                            <Camera className="w-3 h-3" /> Screenshot
-                          </a>
-                        )}
                         <span>{p.createdAt ? new Date(p.createdAt).toLocaleString("en-IN") : ""}</span>
                       </div>
+
+                      {/* Screenshot thumbnail preview */}
+                      {(p as any).screenshotFileId && (
+                        <button
+                          data-testid={`button-screenshot-${p.id}`}
+                          onClick={() => { setImgError(false); setScreenshotPayment(p); }}
+                          className="mt-2 flex items-center gap-2 group"
+                        >
+                          <div className="relative w-16 h-16 rounded-md overflow-hidden border border-border/60 bg-muted/30 flex items-center justify-center group-hover:border-primary/50 transition-colors">
+                            <img
+                              src={`/api/payments/${p.id}/screenshot`}
+                              alt="Payment screenshot"
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.display = "none";
+                                (e.target as HTMLImageElement).nextElementSibling?.classList.remove("hidden");
+                              }}
+                            />
+                            <div className="hidden absolute inset-0 flex items-center justify-center">
+                              <Camera className="w-5 h-5 text-muted-foreground/50" />
+                            </div>
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                              <ZoomIn className="w-4 h-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </div>
+                          </div>
+                          <span className="text-xs text-blue-400 group-hover:text-blue-300 transition-colors">View Screenshot</span>
+                        </button>
+                      )}
                     </div>
+
                     {isPending && (
                       <div className="flex items-center gap-2 shrink-0">
                         <Button
@@ -193,6 +213,71 @@ export default function Payments() {
           })
         )}
       </div>
+
+      {/* Screenshot Modal */}
+      <Dialog open={!!screenshotPayment} onOpenChange={(open) => { if (!open) setScreenshotPayment(null); }}>
+        <DialogContent className="max-w-lg bg-card border-border/60 p-0 overflow-hidden">
+          <DialogHeader className="px-4 pt-4 pb-2">
+            <DialogTitle className="text-sm font-semibold flex items-center gap-2">
+              <Camera className="w-4 h-4 text-muted-foreground" />
+              Payment Screenshot
+              {screenshotPayment && (
+                <span className="text-muted-foreground font-normal">
+                  — {screenshotPayment.firstName || ""} {screenshotPayment.username ? `@${screenshotPayment.username}` : `ID: ${screenshotPayment.telegramUserId}`}
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {screenshotPayment && (
+            <div className="px-4 pb-2">
+              <div className="flex gap-4 text-xs text-muted-foreground mb-3">
+                <span>Txn: <code className="text-foreground/80 bg-muted/50 px-1 rounded">{screenshotPayment.txnId}</code></span>
+                <span>₹{screenshotPayment.amount || 0}</span>
+                <span>Plan: <strong className="text-foreground/80">{screenshotPayment.planName || "N/A"}</strong></span>
+              </div>
+            </div>
+          )}
+          <div className="px-4 pb-4">
+            {imgError ? (
+              <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-2 bg-muted/20 rounded-lg">
+                <Camera className="w-10 h-10 opacity-30" />
+                <p className="text-sm">Screenshot unavailable</p>
+                <p className="text-xs opacity-60">Bot must be online to load Telegram screenshots</p>
+              </div>
+            ) : screenshotPayment ? (
+              <img
+                src={`/api/payments/${screenshotPayment.id}/screenshot`}
+                alt="Payment proof"
+                className="w-full rounded-lg object-contain max-h-[60vh] bg-muted/20"
+                onError={() => setImgError(true)}
+              />
+            ) : null}
+          </div>
+          {screenshotPayment && screenshotPayment.status === "pending" && (
+            <div className="flex gap-2 px-4 pb-4">
+              <Button
+                data-testid="button-modal-verify"
+                className="flex-1 bg-green-600 text-white border-0"
+                onClick={() => { verifyMutation.mutate(screenshotPayment.id); setScreenshotPayment(null); }}
+                disabled={verifyMutation.isPending}
+              >
+                <CheckCircle className="w-3.5 h-3.5 mr-1.5" />
+                Verify Payment
+              </Button>
+              <Button
+                data-testid="button-modal-reject"
+                className="flex-1"
+                variant="destructive"
+                onClick={() => { rejectMutation.mutate(screenshotPayment.id); setScreenshotPayment(null); }}
+                disabled={rejectMutation.isPending}
+              >
+                <XCircle className="w-3.5 h-3.5 mr-1.5" />
+                Reject
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
