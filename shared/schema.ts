@@ -49,6 +49,8 @@ export const payments = pgTable("payments", {
   channelId: text("channel_id"),
   status: text("status").notNull().default("pending"), // pending, verified, rejected
   adminNote: text("admin_note"),
+  screenshotFileId: text("screenshot_file_id"),
+  paymentMethod: text("payment_method"),
   createdAt: timestamp("created_at").defaultNow(),
   verifiedAt: timestamp("verified_at"),
 });

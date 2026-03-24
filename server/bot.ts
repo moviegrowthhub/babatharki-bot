@@ -11,7 +11,14 @@ export function getBot(): TelegramBot | null {
 }
 
 // Track user state for multi-step flow (in-memory, resets on restart)
-const userStates: Map<string, { step: string; planId?: number; planName?: string; amount?: number; paymentMethod?: string }> = new Map();
+const userStates: Map<string, {
+  step: string;
+  planId?: number;
+  planName?: string;
+  amount?: number;
+  paymentMethod?: string;
+  screenshotFileId?: string;
+}> = new Map();
 
 export async function initBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -136,18 +143,56 @@ export async function initBot() {
       );
     });
 
-    // ─── Text messages (UTR capture) ─────────────────────────────────────────
+    // ─── Messages (screenshot + UTR capture) ─────────────────────────────────
     bot.on("message", async (msg) => {
       if (msg.text?.startsWith("/")) return; // skip commands
       const chatId = msg.chat.id;
       const userId = String(msg.from?.id);
       const state = userStates.get(userId);
+      if (!state) return;
 
-      if (state?.step === "awaiting_utr") {
+      // ── Step 1: Waiting for screenshot (photo) ──
+      if (state.step === "awaiting_screenshot") {
+        if (msg.photo && msg.photo.length > 0) {
+          // Get highest-res photo
+          const fileId = msg.photo[msg.photo.length - 1].file_id;
+          // Save file_id in state, move to UTR step
+          userStates.set(userId, { ...state, step: "awaiting_utr", screenshotFileId: fileId });
+
+          const label = state.paymentMethod === "bitcoin" ? "Transaction Hash (TX ID)" : "UTR / Reference Number";
+          await bot!.sendMessage(chatId,
+            `✅ *Screenshot received!*\n\n` +
+            `📝 *Step 2: Send your ${label}*\n\n` +
+            `${state.paymentMethod === "bitcoin"
+              ? "Copy the Transaction ID from your Bitcoin wallet."
+              : "Open GPay/PhonePe → Transaction History → copy the 12-digit UTR number."
+            }\n\n` +
+            `Just type/paste it below 👇`,
+            { parse_mode: "Markdown" }
+          );
+        } else {
+          // User sent text instead of photo
+          await bot!.sendMessage(chatId,
+            `📸 Please send a *photo/screenshot* of your payment.\n\nIf you don't have a screenshot, send your UTR/TX hash and we'll process it manually.`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: "⏭ Skip — Enter UTR directly", callback_data: `skip_screenshot:${state.planId}:${state.paymentMethod || "upi"}` }
+                ]],
+              },
+            }
+          );
+        }
+        return;
+      }
+
+      // ── Step 2: Waiting for UTR number (text) ──
+      if (state.step === "awaiting_utr") {
         const utr = msg.text?.trim();
         if (!utr || utr.length < 6) {
           await bot!.sendMessage(chatId,
-            "❌ Please send a valid UTR/Reference number (usually 12 digits shown in your payment app)."
+            "❌ Please send a valid UTR/Reference number (at least 6 characters)."
           );
           return;
         }
@@ -281,7 +326,7 @@ export async function initBot() {
         );
       }
 
-      // ── Confirm paid → ask for UTR ──
+      // ── Confirm paid → ask for screenshot first ──
       else if (data.startsWith("confirm_paid:")) {
         const parts = data.split(":");
         const planId = parseInt(parts[1]);
@@ -289,14 +334,36 @@ export async function initBot() {
         const plan = await storage.getPlanById(planId);
         if (!plan) return;
 
-        userStates.set(userId, { step: "awaiting_utr", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: method });
+        userStates.set(userId, { step: "awaiting_screenshot", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: method });
+
+        await bot!.sendMessage(chatId,
+          `📸 *Step 1: Send Payment Screenshot*\n\n` +
+          `Please send a *screenshot* of your payment confirmation from your payment app.\n\n` +
+          `📱 GPay/PhonePe/Paytm → Transaction History → Screenshot\n` +
+          `₿ Bitcoin → Copy transaction confirmation screenshot\n\n` +
+          `Send the photo now 👇`,
+          { parse_mode: "Markdown" }
+        );
+      }
+
+      // ── Skip screenshot → go straight to UTR ──
+      else if (data.startsWith("skip_screenshot:")) {
+        const parts = data.split(":");
+        const planId = parseInt(parts[1]);
+        const method = parts[2] || "upi";
+        const plan = await storage.getPlanById(planId);
+        if (!plan) return;
+
+        const existing = userStates.get(userId) || {};
+        userStates.set(userId, { ...existing, step: "awaiting_utr", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: method });
 
         const label = method === "bitcoin" ? "Transaction Hash (TX ID)" : "UTR / Reference Number";
         await bot!.sendMessage(chatId,
-          `📨 *Please send your ${label}*\n\n` +
-          `This is shown in your payment app after a successful payment.\n\n` +
-          `*For UPI:* Open GPay/PhonePe → Transaction History → copy the 12-digit UTR\n` +
-          `*For Bitcoin:* Copy the Transaction ID from your wallet\n\n` +
+          `📝 *Send your ${label}*\n\n` +
+          `${method === "bitcoin"
+            ? "Copy the Transaction ID from your Bitcoin wallet."
+            : "Open GPay/PhonePe → Transaction History → copy the 12-digit UTR number."
+          }\n\n` +
           `Just type/paste it below 👇`,
           { parse_mode: "Markdown" }
         );
@@ -363,14 +430,14 @@ export async function initBot() {
   }
 }
 
-// ── Submit payment (after UTR capture) ────────────────────────────────────────
+// ── Submit payment (after screenshot + UTR capture) ───────────────────────────
 async function submitPayment(
   chatId: number,
   userId: string,
   username: string,
   firstName: string,
   utr: string,
-  state: { planId?: number; planName?: string; amount?: number; paymentMethod?: string }
+  state: { planId?: number; planName?: string; amount?: number; paymentMethod?: string; screenshotFileId?: string }
 ) {
   const adminId = process.env.TELEGRAM_ADMIN_ID;
 
@@ -397,6 +464,8 @@ async function submitPayment(
     amount: state.amount,
     channelId: channel?.channelId || "",
     status: "pending",
+    screenshotFileId: state.screenshotFileId || null,
+    paymentMethod: state.paymentMethod || "upi",
   });
 
   await bot!.sendMessage(chatId,
@@ -404,8 +473,9 @@ async function submitPayment(
     `📋 Ref: \`${utr}\`\n` +
     `📦 Plan: *${state.planName}*\n` +
     `💰 Amount: ₹${state.amount}\n` +
-    `🏦 Method: ${state.paymentMethod === "bitcoin" ? "Bitcoin" : "UPI"}\n\n` +
-    `⏳ *Verification in progress...*\n` +
+    `🏦 Method: ${state.paymentMethod === "bitcoin" ? "Bitcoin" : "UPI"}\n` +
+    (state.screenshotFileId ? `📸 Screenshot: Attached ✓\n` : "") +
+    `\n⏳ *Verification in progress...*\n` +
     `You'll receive your channel invite link automatically once verified!\n\n` +
     `Usually takes less than 5 minutes.`,
     { parse_mode: "Markdown" }
@@ -414,24 +484,36 @@ async function submitPayment(
   // Notify admin with quick action buttons
   if (adminId) {
     try {
-      await bot!.sendMessage(Number(adminId),
+      const adminText =
         `🔔 *New Payment Received!*\n\n` +
         `👤 User: ${firstName}${username ? ` (@${username})` : ""}\n` +
         `🆔 User ID: \`${userId}\`\n` +
         `📋 ${state.paymentMethod === "bitcoin" ? "TX Hash" : "UTR"}: \`${utr}\`\n` +
         `📦 Plan: *${state.planName}* — ₹${state.amount}\n` +
         `🏦 Method: ${state.paymentMethod === "bitcoin" ? "Bitcoin" : "UPI"}\n` +
-        `⏰ ${new Date().toLocaleString("en-IN")}`,
-        {
+        `📸 Screenshot: ${state.screenshotFileId ? "Attached below ⬇️" : "Not provided"}\n` +
+        `⏰ ${new Date().toLocaleString("en-IN")}`;
+
+      const adminButtons = {
+        inline_keyboard: [[
+          { text: "✅ Verify & Add", callback_data: `admin_verify:${payment.id}` },
+          { text: "❌ Reject", callback_data: `admin_reject:${payment.id}` },
+        ]],
+      };
+
+      // If screenshot exists, send it with caption + buttons
+      if (state.screenshotFileId) {
+        await bot!.sendPhoto(Number(adminId), state.screenshotFileId, {
+          caption: adminText,
           parse_mode: "Markdown",
-          reply_markup: {
-            inline_keyboard: [[
-              { text: "✅ Verify & Add", callback_data: `admin_verify:${payment.id}` },
-              { text: "❌ Reject", callback_data: `admin_reject:${payment.id}` },
-            ]],
-          },
-        }
-      );
+          reply_markup: adminButtons,
+        });
+      } else {
+        await bot!.sendMessage(Number(adminId), adminText, {
+          parse_mode: "Markdown",
+          reply_markup: adminButtons,
+        });
+      }
     } catch (e) {
       console.error("[Bot] Failed to notify admin:", e);
     }

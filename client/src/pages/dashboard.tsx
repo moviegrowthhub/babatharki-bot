@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import {
   Users, CreditCard, UserCheck, UserX, Clock,
-  IndianRupee, CheckCircle, XCircle, Bot, Hash, Zap,
+  IndianRupee, CheckCircle, XCircle, Bot, Hash, Zap, Camera,
 } from "lucide-react";
 import type { Payment, Member } from "@shared/schema";
 
@@ -145,6 +145,17 @@ export default function Dashboard() {
                   </div>
                   <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
                     <span>UTR/Ref: <code className="text-foreground/80 bg-muted/50 px-1 rounded">{p.txnId}</code></span>
+                    {(p as any).screenshotFileId && (
+                      <a
+                        href={`/api/payments/${p.id}/screenshot`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 font-medium"
+                        data-testid={`link-screenshot-dash-${p.id}`}
+                      >
+                        <Camera className="w-3 h-3" /> View Screenshot
+                      </a>
+                    )}
                     <span>{p.createdAt ? new Date(p.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : ""}</span>
                   </div>
                 </div>

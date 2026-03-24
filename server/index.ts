@@ -108,10 +108,15 @@ async function runMigrations() {
       channel_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       admin_note TEXT,
+      screenshot_file_id TEXT,
+      payment_method TEXT,
       created_at TIMESTAMP DEFAULT NOW(),
       verified_at TIMESTAMP
     )
   `);
+  // Add columns if they don't exist (for existing tables)
+  await db.execute(sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS screenshot_file_id TEXT`);
+  await db.execute(sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method TEXT`);
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS settings (
       id SERIAL PRIMARY KEY,
