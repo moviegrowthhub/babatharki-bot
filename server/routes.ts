@@ -1,11 +1,21 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { verifyPaymentAndAddMember, getBot } from "./bot";
+import { verifyPaymentAndAddMember, getBot, handleWebhookUpdate } from "./bot";
 import { insertChannelSchema, insertPlanSchema } from "@shared/schema";
 import { z } from "zod";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  // Telegram webhook endpoint (production mode)
+  app.post("/api/telegram-webhook", async (req, res) => {
+    try {
+      await handleWebhookUpdate(req.body);
+      res.json({ ok: true });
+    } catch (e) {
+      res.json({ ok: false });
+    }
+  });
+
   // Dashboard stats
   app.get("/api/stats", async (req, res) => {
     const [allMembers, allPayments, allPlans, allChannels] = await Promise.all([
