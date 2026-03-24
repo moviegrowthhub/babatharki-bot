@@ -125,6 +125,11 @@ async function sendAdminStats(chatId: number, editMsgId?: number) {
   await bot.sendMessage(chatId, text, opts);
 }
 
+export async function handleWebhookUpdate(update: any) {
+  if (!bot) return;
+  bot.processUpdate(update);
+}
+
 export async function initBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const adminId = process.env.TELEGRAM_ADMIN_ID;
@@ -134,10 +139,28 @@ export async function initBot() {
     return;
   }
 
+  const isProd = process.env.NODE_ENV === "production";
+
   try {
-    bot = new TelegramBot(token, { polling: true });
-    bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
-    console.log("[Bot] Started successfully.");
+    if (isProd) {
+      // Production: use webhook, no polling
+      bot = new TelegramBot(token, { polling: false });
+      const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAIN;
+      if (domain) {
+        const webhookUrl = `https://${domain}/api/telegram-webhook`;
+        await bot.setWebHook(webhookUrl);
+        console.log(`[Bot] Webhook set to: ${webhookUrl}`);
+      } else {
+        console.log("[Bot] No domain found for webhook, falling back to polling.");
+        (bot as any).startPolling();
+        bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
+      }
+    } else {
+      // Development: use polling
+      bot = new TelegramBot(token, { polling: true });
+      bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
+    }
+    console.log(`[Bot] Started successfully (${isProd ? "webhook" : "polling"} mode).`);
 
     // ─── /start ──────────────────────────────────────────────────────────────
     bot.onText(/\/start/, async (msg) => {
