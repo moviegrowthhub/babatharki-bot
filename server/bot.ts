@@ -430,7 +430,7 @@ export async function initBot() {
           const upiId = (await storage.getSetting("upi_id"))?.value || "bs883653-2@oksbi";
           const upiName = (await storage.getSetting("upi_name"))?.value || "Bindar Singh";
 
-          userStates.set(userId, { step: "awaiting_screenshot", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: "upi" });
+          userStates.set(userId, { step: "awaiting_confirm", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: "upi" });
 
           const upiCaption =
             `💳 *UPI Payment Instructions*\n` +
@@ -470,7 +470,7 @@ export async function initBot() {
 
           const btcAddress = (await storage.getSetting("bitcoin_address"))?.value || "bc1qe6q4g9gng3f9f3raezx4002yeuv3572v40acuc";
 
-          userStates.set(userId, { step: "awaiting_screenshot", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: "bitcoin" });
+          userStates.set(userId, { step: "awaiting_confirm", planId: plan.id, planName: plan.name, amount: plan.price, paymentMethod: "bitcoin" });
 
           await bot!.sendMessage(chatId,
             `₿ *Bitcoin Payment Instructions*\n` +
