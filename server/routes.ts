@@ -87,6 +87,78 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     await storage.updateMemberStatus(id, status);
     res.json({ ok: true });
   });
+  // Extend membership
+  app.post("/api/members/:id/extend", async (req, res) => {
+    const id = parseInt(req.params.id);
+    const { days } = req.body;
+    if (!days || isNaN(Number(days))) return res.status(400).json({ error: "days required" });
+    const member = await storage.getMemberById(id);
+    if (!member) return res.status(404).json({ error: "Not found" });
+    const base = member.expiresAt && new Date(member.expiresAt) > new Date()
+      ? new Date(member.expiresAt) : new Date();
+    const newExpiry = new Date(base.getTime() + Number(days) * 86400000);
+    await storage.updateMemberExpiry(id, newExpiry, "active", member.planName || undefined);
+    const bot = getBot();
+    if (bot) {
+      try {
+        await bot.sendMessage(Number(member.telegramUserId),
+          `🎁 *Membership Extended!*\n\nAdmin has extended your VIP access by *${days} days*.\n📅 New expiry: *${newExpiry.toLocaleDateString("en-IN")}*\n\nEnjoy! 🎉`,
+          { parse_mode: "Markdown" }
+        );
+      } catch (e) {}
+    }
+    res.json({ ok: true, newExpiry });
+  });
+  // Send message to member
+  app.post("/api/members/:id/notify", async (req, res) => {
+    const id = parseInt(req.params.id);
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: "message required" });
+    const member = await storage.getMemberById(id);
+    if (!member) return res.status(404).json({ error: "Not found" });
+    const bot = getBot();
+    if (!bot) return res.status(503).json({ error: "Bot offline" });
+    try {
+      await bot.sendMessage(Number(member.telegramUserId), message, { parse_mode: "Markdown" });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  // Manually add member
+  app.post("/api/members/add", async (req, res) => {
+    const { telegramUserId, username, firstName, planId, channelId } = req.body;
+    if (!telegramUserId || !planId || !channelId) return res.status(400).json({ error: "telegramUserId, planId, channelId required" });
+    const plan = await storage.getPlanById(Number(planId));
+    if (!plan) return res.status(404).json({ error: "Plan not found" });
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + plan.durationDays);
+    const existing = await storage.getMemberByUserAndChannel(String(telegramUserId), String(channelId));
+    if (existing) {
+      const base = existing.expiresAt && new Date(existing.expiresAt) > new Date() ? new Date(existing.expiresAt) : new Date();
+      const newExpiry = new Date(base.getTime() + plan.durationDays * 86400000);
+      await storage.updateMemberExpiry(existing.id, newExpiry, "active", plan.name);
+    } else {
+      await storage.createMember({ telegramUserId: String(telegramUserId), username: username || "", firstName: firstName || "", channelId: String(channelId), planId: plan.id, planName: plan.name, expiresAt, status: "active" });
+    }
+    const bot = getBot();
+    if (bot) {
+      try {
+        let inviteLink = "";
+        const channels = await storage.getChannels();
+        const ch = channels.find(c => c.channelId === String(channelId));
+        try {
+          const link = await bot.createChatInviteLink(String(channelId), { expire_date: Math.floor(expiresAt.getTime() / 1000) });
+          inviteLink = link.invite_link;
+        } catch (e) {}
+        await bot.sendMessage(Number(telegramUserId),
+          `🎉 *You have been added to VIP Zone!*\n\n📦 Plan: *${plan.name}*\n📅 Expires: *${expiresAt.toLocaleDateString("en-IN")}*\n\n${inviteLink ? `🔗 *Join here:*\n${inviteLink}` : "Contact admin for the invite link."}`,
+          { parse_mode: "Markdown" }
+        );
+      } catch (e) {}
+    }
+    res.json({ ok: true });
+  });
   app.delete("/api/members/:id", async (req, res) => {
     const member = await storage.getMemberById(parseInt(req.params.id));
     if (member) {
@@ -95,6 +167,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (bot) {
         try {
           await bot.banChatMember(member.channelId, Number(member.telegramUserId));
+        } catch (e) {}
+        try {
+          await bot.sendMessage(Number(member.telegramUserId),
+            `🚫 *Your VIP access has been revoked.*\n\nContact admin if you think this is a mistake.`,
+            { parse_mode: "Markdown" }
+          );
         } catch (e) {}
       }
     }
