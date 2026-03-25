@@ -141,6 +141,8 @@ export async function initBot() {
 
   const isProd = process.env.NODE_ENV === "production";
 
+  const allowedUpdates = ["message", "callback_query", "chat_member", "my_chat_member"];
+
   try {
     if (isProd) {
       // Production: use webhook, no polling
@@ -148,19 +150,44 @@ export async function initBot() {
       const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAIN;
       if (domain) {
         const webhookUrl = `https://${domain}/api/telegram-webhook`;
-        await bot.setWebHook(webhookUrl);
+        await (bot as any).setWebHook(webhookUrl, { allowed_updates: allowedUpdates });
         console.log(`[Bot] Webhook set to: ${webhookUrl}`);
       } else {
         console.log("[Bot] No domain found for webhook, falling back to polling.");
-        (bot as any).startPolling();
+        (bot as any).startPolling({ params: { allowed_updates: allowedUpdates } });
         bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
       }
     } else {
       // Development: use polling
-      bot = new TelegramBot(token, { polling: true });
+      bot = new TelegramBot(token, {
+        polling: { params: { allowed_updates: JSON.stringify(allowedUpdates) } as any },
+      });
       bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
     }
     console.log(`[Bot] Started successfully (${isProd ? "webhook" : "polling"} mode).`);
+
+    // ─── Auto-revoke invite link when member joins ─────────────────────────
+    (bot as any).on("chat_member", async (update: any) => {
+      try {
+        const newMember = update.new_chat_member;
+        const inviteLink = update.invite_link;
+
+        const justJoined =
+          newMember.status === "member" &&
+          (update.old_chat_member?.status === "left" || update.old_chat_member?.status === "kicked");
+
+        if (justJoined && inviteLink?.invite_link) {
+          try {
+            await bot!.revokeChatInviteLink(String(update.chat.id), inviteLink.invite_link);
+            console.log(`[Bot] ✅ Invite link revoked after user ${newMember.user.id} joined chat ${update.chat.id}`);
+          } catch (e: any) {
+            console.error("[Bot] Failed to revoke invite link:", e.message);
+          }
+        }
+      } catch (e: any) {
+        console.error("[Bot] chat_member handler error:", e.message);
+      }
+    });
 
     // ─── /start ──────────────────────────────────────────────────────────────
     bot.onText(/\/start/, async (msg) => {
@@ -935,7 +962,7 @@ export async function initBot() {
               `━━━━━━━━━━━━━━━━━━━━\n` +
               `📦 Plan: *${plan.name}*\n` +
               `📅 Expires: *${expiresAt.toLocaleDateString("en-IN")}*\n\n` +
-              `${inviteLink ? `🔗 *Join now:*\n${inviteLink}` : "Contact admin for the invite link."}`,
+              `${inviteLink ? `🔗 *Your One-Time Invite Link:*\n${inviteLink}\n\n⚠️ *This link will self-destruct after you join!*\n🚫 Do NOT share with anyone!` : "Contact admin for the invite link."}`,
               { parse_mode: "Markdown" }
             );
           } catch (e) {}
@@ -1186,9 +1213,9 @@ export async function verifyPaymentAndAddMember(paymentId: number, adminChatId?:
           `⏱ Duration: *${plan.durationDays} days*\n` +
           `📅 Expires: *${expiresAt.toLocaleDateString("en-IN")}*\n` +
           `━━━━━━━━━━━━━━━━━━━━\n\n` +
-          `🔗 *Your Invite Link:*\n${inviteLink || "Contact admin for the link."}\n\n` +
-          `✅ Link is valid until your membership expires.\n` +
-          `⚠️ Do NOT share this link with others!`,
+          `🔗 *Your One-Time Invite Link:*\n${inviteLink || "Contact admin for the link."}\n\n` +
+          `⚠️ *This link is for YOU only — it will self-destruct after you join!*\n` +
+          `🚫 Do NOT share this link with anyone!`,
           { parse_mode: "Markdown" }
         );
       } catch (e: any) {

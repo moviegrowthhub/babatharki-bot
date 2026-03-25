@@ -162,7 +162,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           inviteLink = link.invite_link;
         } catch (e) {}
         await bot.sendMessage(Number(telegramUserId),
-          `🎉 *You have been added to VIP Zone!*\n\n📦 Plan: *${plan.name}*\n📅 Expires: *${expiresAt.toLocaleDateString("en-IN")}*\n\n${inviteLink ? `🔗 *Join here:*\n${inviteLink}` : "Contact admin for the invite link."}`,
+          `🎉 *You have been added to VIP Zone!*\n\n📦 Plan: *${plan.name}*\n📅 Expires: *${expiresAt.toLocaleDateString("en-IN")}*\n\n${inviteLink ? `🔗 *Your One-Time Invite Link:*\n${inviteLink}\n\n⚠️ *This link will self-destruct after you join!*\n🚫 Do NOT share with anyone!` : "Contact admin for the invite link."}`,
           { parse_mode: "Markdown" }
         );
       } catch (e) {}
