@@ -39,6 +39,7 @@ outputType = "webview"
 
 [agent]
 expertMode = true
+integrations = ["javascript_gemini_ai_integrations:2.0.0"]
 
 [[ports]]
 localPort = 5000
