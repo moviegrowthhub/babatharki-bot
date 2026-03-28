@@ -41,6 +41,8 @@ async function sendAdminPanel(chatId: number, editMsgId?: number) {
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `_Select an action:_`;
 
+  const banned = allMembers.filter(m => m.status === "banned").length;
+
   const keyboard = {
     inline_keyboard: [
       [
@@ -52,8 +54,8 @@ async function sendAdminPanel(chatId: number, editMsgId?: number) {
         { text: "❌ Expired Members", callback_data: "admin_expired" },
       ],
       [
+        { text: `🚫 Banned (${banned})`, callback_data: "admin_banned" },
         { text: "➕ Add Member", callback_data: "admin_addmember" },
-        { text: "🚫 Ban Member", callback_data: "admin_ban" },
       ],
       [
         { text: "📢 Broadcast", callback_data: "admin_broadcast" },
@@ -463,7 +465,7 @@ export async function initBot() {
         const firstName = query.from.first_name || "Friend";
         const username = query.from.username || "";
         if (!chatId) return;
-        await bot!.answerCallbackQuery(query.id);
+        try { await bot!.answerCallbackQuery(query.id); } catch (_) {}
 
         const data = query.data || "";
 
@@ -744,14 +746,128 @@ export async function initBot() {
           try {
             await bot!.editMessageText(text, {
               chat_id: chatId, message_id: msgId, parse_mode: "Markdown",
-              reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] },
+              reply_markup: { inline_keyboard: [
+                [{ text: "🚫 Ban a Member", callback_data: "admin_banlist" }],
+                [{ text: "◀ Back to Panel", callback_data: "admin_menu" }],
+              ]},
             });
           } catch (_) {
             await bot!.sendMessage(chatId, text, {
               parse_mode: "Markdown",
-              reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] },
+              reply_markup: { inline_keyboard: [
+                [{ text: "🚫 Ban a Member", callback_data: "admin_banlist" }],
+                [{ text: "◀ Back to Panel", callback_data: "admin_menu" }],
+              ]},
             });
           }
+        }
+
+        else if (data === "admin_banlist") {
+          if (userId !== adminId) return;
+          const allMembers = await storage.getMembers();
+          const active = allMembers.filter(m => m.status === "active");
+          if (!active.length) {
+            await bot!.sendMessage(chatId, `ℹ️ *No active members to ban.*`, {
+              parse_mode: "Markdown",
+              reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] },
+            });
+            return;
+          }
+          const banButtons = active.slice(0, 20).map(m => ([{
+            text: `🚫 ${m.firstName || "Unknown"}${m.username ? ` (@${m.username})` : ""} — ${m.planName || "N/A"}`,
+            callback_data: `admin_banmember:${m.id}`,
+          }]));
+          banButtons.push([{ text: "◀ Back", callback_data: "admin_members" }]);
+          await bot!.sendMessage(chatId,
+            `🚫 *Select member to ban:*\n━━━━━━━━━━━━━━━━━━━━\n_Tap a name to ban that member immediately._`,
+            { parse_mode: "Markdown", reply_markup: { inline_keyboard: banButtons } }
+          );
+        }
+
+        else if (data.startsWith("admin_banmember:")) {
+          if (userId !== adminId) return;
+          const memberId = parseInt(data.split(":")[1]);
+          const allMembers = await storage.getMembers();
+          const member = allMembers.find(m => m.id === memberId);
+          if (!member) {
+            await bot!.sendMessage(chatId, `❌ Member not found.`, { reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] } });
+            return;
+          }
+          await storage.updateMemberStatus(member.id, "banned");
+          try { await bot!.banChatMember(member.channelId, Number(member.telegramUserId)); } catch (e) {}
+          try {
+            await bot!.sendMessage(Number(member.telegramUserId),
+              `🚫 *Aapki VIP membership cancel kar di gayi hai.*\n\nKisi galti ke liye admin se contact karein.`,
+              { parse_mode: "Markdown" }
+            );
+          } catch (e) {}
+          await bot!.sendMessage(chatId,
+            `✅ *Member Banned!*\n\n👤 *${member.firstName || "Unknown"}*${member.username ? ` (@${member.username})` : ""}\n🆔 ID: \`${member.telegramUserId}\`\n\nGroup se remove kar diya gaya hai.`,
+            { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
+              [{ text: "🚫 Ban Another", callback_data: "admin_banlist" }],
+              [{ text: "◀ Back to Panel", callback_data: "admin_menu" }],
+            ]}}
+          );
+        }
+
+        else if (data === "admin_banned") {
+          if (userId !== adminId) return;
+          const allMembers = await storage.getMembers();
+          const banned = allMembers.filter(m => m.status === "banned");
+          if (!banned.length) {
+            try {
+              await bot!.editMessageText(`✅ *No banned members.*`, {
+                chat_id: chatId, message_id: msgId, parse_mode: "Markdown",
+                reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] },
+              });
+            } catch (_) {
+              await bot!.sendMessage(chatId, `✅ *No banned members.*`, {
+                parse_mode: "Markdown",
+                reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] },
+              });
+            }
+            return;
+          }
+          const unbanButtons = banned.slice(0, 20).map(m => ([{
+            text: `✅ Unban: ${m.firstName || "Unknown"}${m.username ? ` (@${m.username})` : ""}`,
+            callback_data: `admin_unbanmember:${m.id}`,
+          }]));
+          unbanButtons.push([{ text: "◀ Back to Panel", callback_data: "admin_menu" }]);
+          const text = `🚫 *Banned Members (${banned.length})*\n━━━━━━━━━━━━━━━━━━━━\n_Tap to unban:_`;
+          try {
+            await bot!.editMessageText(text, {
+              chat_id: chatId, message_id: msgId, parse_mode: "Markdown",
+              reply_markup: { inline_keyboard: unbanButtons },
+            });
+          } catch (_) {
+            await bot!.sendMessage(chatId, text, {
+              parse_mode: "Markdown",
+              reply_markup: { inline_keyboard: unbanButtons },
+            });
+          }
+        }
+
+        else if (data.startsWith("admin_unbanmember:")) {
+          if (userId !== adminId) return;
+          const memberId = parseInt(data.split(":")[1]);
+          const allMembers = await storage.getMembers();
+          const member = allMembers.find(m => m.id === memberId);
+          if (!member) {
+            await bot!.sendMessage(chatId, `❌ Member not found.`);
+            return;
+          }
+          await storage.updateMemberStatus(member.id, "expired");
+          try { await bot!.unbanChatMember(member.channelId, Number(member.telegramUserId)); } catch (e) {}
+          try {
+            await bot!.sendMessage(Number(member.telegramUserId),
+              `✅ *Aapka ban hata diya gaya hai.*\n\nDobara join karne ke liye /start karein.`,
+              { parse_mode: "Markdown" }
+            );
+          } catch (e) {}
+          await bot!.sendMessage(chatId,
+            `✅ *Member Unbanned!*\n\n👤 *${member.firstName || "Unknown"}*${member.username ? ` (@${member.username})` : ""}\n\nAbh woh dobara subscribe kar sakte hain.`,
+            { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] } }
+          );
         }
 
         else if (data === "admin_expired") {
