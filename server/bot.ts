@@ -189,6 +189,44 @@ export async function initBot() {
       }
     });
 
+    // ─── Auto-register group when bot is added as admin ──────────────────────
+    (bot as any).on("my_chat_member", async (update: any) => {
+      try {
+        const newStatus = update.new_chat_member?.status;
+        const chat = update.chat;
+        if (!chat || chat.type === "private") return;
+
+        const isPromotedToAdmin = (newStatus === "administrator" || newStatus === "member") &&
+          (update.old_chat_member?.status === "left" || update.old_chat_member?.status === "kicked" || update.old_chat_member?.status === "restricted");
+
+        if (isPromotedToAdmin || newStatus === "administrator") {
+          const channelId = String(chat.id);
+          const channelName = chat.title || channelId;
+          const existing = await storage.getChannels();
+          const alreadyExists = existing.find(c => c.channelId === channelId);
+          if (!alreadyExists) {
+            await storage.createChannel({
+              channelId,
+              channelName,
+              channelUsername: chat.username || undefined,
+              inviteLink: `https://t.me/+BrUETfNf9sM0YWE9`,
+              isActive: true,
+            });
+            console.log(`[Bot] ✅ Auto-registered group: ${channelName} (${channelId})`);
+            const adminId = process.env.TELEGRAM_ADMIN_ID;
+            if (adminId) {
+              await bot!.sendMessage(Number(adminId),
+                `✅ *Group Auto-Registered!*\n\n📌 Name: *${channelName}*\n🆔 ID: \`${channelId}\`\n\nPayment verified users will now be sent invite links to this group.`,
+                { parse_mode: "Markdown" }
+              );
+            }
+          }
+        }
+      } catch (e: any) {
+        console.error("[Bot] my_chat_member handler error:", e.message);
+      }
+    });
+
     // ─── /start ──────────────────────────────────────────────────────────────
     bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id;
