@@ -1,6 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import { storage } from "./storage";
+import { askAI, generateImage, writeBroadcastMessage } from "./ai";
 import path from "path";
 import fs from "fs";
 
@@ -17,6 +18,8 @@ const userStates: Map<string, {
   amount?: number;
   paymentMethod?: string;
   screenshotFileId?: string;
+  aiMessage?: string;
+  aiPrompt?: string;
 }> = new Map();
 
 // ── Admin Panel ───────────────────────────────────────────────────────────────
@@ -60,6 +63,10 @@ async function sendAdminPanel(chatId: number, editMsgId?: number) {
       [
         { text: "📢 Broadcast", callback_data: "admin_broadcast" },
         { text: "💰 Revenue Report", callback_data: "admin_revenue" },
+      ],
+      [
+        { text: "🤖 AI Broadcast Writer", callback_data: "admin_ai_broadcast" },
+        { text: "🎨 AI Image Blast", callback_data: "admin_ai_image" },
       ],
       [
         { text: "⚙️ Settings", callback_data: "admin_settings" },
@@ -302,17 +309,23 @@ export async function initBot() {
       await bot!.sendMessage(msg.chat.id,
         `📚 *Help Menu*\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
-        `/start — Choose a plan & subscribe\n` +
-        `/status — Check your membership\n` +
-        `/help — Show this menu\n\n` +
-        `*How to subscribe:*\n` +
-        `1️⃣ Use /start and pick a plan\n` +
-        `2️⃣ Pay via UPI or Bitcoin\n` +
-        `3️⃣ Send payment screenshot\n` +
-        `4️⃣ Send your UTR/reference number\n` +
-        `5️⃣ Get verified & receive invite link!\n\n` +
-        `⏱ Usually verified in under 5 minutes.\n` +
-        `📞 Need help? Contact the admin.`,
+        `/start — Plan choose karo & subscribe karo\n` +
+        `/status — Apni membership check karo\n` +
+        `/ai <sawaal> — 🤖 AI se kuch bhi poochho _(VIP only)_\n` +
+        `/imagine <prompt> — 🎨 AI se image banao _(VIP only)_\n` +
+        `/help — Yeh menu dekho\n\n` +
+        `💎 *VIP Members ke special features:*\n` +
+        `  🤖 AI Chatbot — koi bhi sawaal poochho\n` +
+        `  🎨 AI Image Generator — koi bhi image banao\n` +
+        `  📩 Smart auto-reply — bas message karo!\n\n` +
+        `*Subscribe kaise karein:*\n` +
+        `1️⃣ /start se plan choose karo\n` +
+        `2️⃣ UPI ya Bitcoin se pay karo\n` +
+        `3️⃣ Screenshot bhejo\n` +
+        `4️⃣ UTR/reference number bhejo\n` +
+        `5️⃣ Verified hoge aur invite link milega!\n\n` +
+        `⏱ Usually 5 minutes mein verify ho jaata hai.\n` +
+        `📞 Help chahiye? Admin se contact karo.`,
         { parse_mode: "Markdown" }
       );
     });
@@ -338,7 +351,73 @@ export async function initBot() {
       await sendAdminStats(msg.chat.id);
     });
 
-    // ─── Messages ─────────────────────────────────────────────────────────────
+    // ─── /ai ─────────────────────────────────────────────────────────────────
+    bot.onText(/\/ai (.+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const userId = String(msg.from?.id);
+      const question = match![1].trim();
+
+      const members = await storage.getMembers();
+      const isVip = members.some(m => m.telegramUserId === userId && m.status === "active");
+      const isAdmin = userId === adminId;
+
+      if (!isVip && !isAdmin) {
+        await bot!.sendMessage(chatId,
+          `🔒 *AI Assistant sirf VIP Members ke liye hai!*\n\n/start karke subscribe karo aur AI ka full access pao.`,
+          { parse_mode: "Markdown" }
+        );
+        return;
+      }
+
+      const thinking = await bot!.sendMessage(chatId, `🤖 _AI soch raha hai..._`, { parse_mode: "Markdown" });
+      try {
+        const reply = await askAI(question,
+          "You are a helpful assistant for VIP members of an exclusive Telegram group. Answer in Hindi/Hinglish mix. Be concise, friendly, and use emojis."
+        );
+        await bot!.editMessageText(`🤖 *AI Answer:*\n\n${reply}`, {
+          chat_id: chatId, message_id: thinking.message_id, parse_mode: "Markdown",
+        });
+      } catch (e: any) {
+        await bot!.editMessageText(`❌ AI error: ${e.message}`, {
+          chat_id: chatId, message_id: thinking.message_id,
+        });
+      }
+    });
+
+    // ─── /imagine ────────────────────────────────────────────────────────────
+    bot.onText(/\/imagine (.+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const userId = String(msg.from?.id);
+      const prompt = match![1].trim();
+
+      const members = await storage.getMembers();
+      const isVip = members.some(m => m.telegramUserId === userId && m.status === "active");
+      const isAdmin = userId === adminId;
+
+      if (!isVip && !isAdmin) {
+        await bot!.sendMessage(chatId,
+          `🔒 *AI Image Generation sirf VIP Members ke liye hai!*\n\n/start karke subscribe karo.`,
+          { parse_mode: "Markdown" }
+        );
+        return;
+      }
+
+      const thinking = await bot!.sendMessage(chatId, `🎨 _AI image bana raha hai..._`, { parse_mode: "Markdown" });
+      try {
+        const imgBuffer = await generateImage(prompt);
+        await bot!.deleteMessage(chatId, thinking.message_id);
+        await bot!.sendPhoto(chatId, imgBuffer, {
+          caption: `🎨 *AI Generated Image*\n📝 Prompt: _${prompt}_`,
+          parse_mode: "Markdown",
+        });
+      } catch (e: any) {
+        await bot!.editMessageText(`❌ Image generation failed: ${e.message}`, {
+          chat_id: chatId, message_id: thinking.message_id,
+        });
+      }
+    });
+
+    // ─── /help ───────────────────────────────────────────────────────────────
     bot.on("message", async (msg) => {
       if (msg.text?.startsWith("/")) return;
       const chatId = msg.chat.id;
@@ -379,6 +458,55 @@ export async function initBot() {
           `👤 *User ID:* \`${inputId}\`\n\nSelect a plan to assign:`,
           { parse_mode: "Markdown", reply_markup: { inline_keyboard: planButtons } }
         );
+        return;
+      }
+
+      // Admin: AI Broadcast — waiting for topic
+      if (state.step === "admin_ai_broadcast_topic" && userId === adminId) {
+        const topic = msg.text?.trim();
+        if (!topic) return;
+        userStates.delete(userId);
+        const thinking = await bot!.sendMessage(chatId, `🤖 _AI broadcast likh raha hai..._`, { parse_mode: "Markdown" });
+        try {
+          const aiMsg = await writeBroadcastMessage(topic);
+          userStates.set(userId, { step: "admin_ai_broadcast_ready", aiMessage: aiMsg });
+          await bot!.deleteMessage(chatId, thinking.message_id);
+          await bot!.sendMessage(chatId,
+            `🤖 *AI-Generated Broadcast:*\n━━━━━━━━━━━━━━━━━━━━\n${aiMsg}\n━━━━━━━━━━━━━━━━━━━━\n\nKya yeh sabko bhejein?`,
+            { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
+              [{ text: "✅ Haan, Sabko Bhejo!", callback_data: "admin_send_ai_broadcast_confirm" }],
+              [{ text: "🔄 Dobara Generate Karo", callback_data: "admin_ai_broadcast" }],
+              [{ text: "❌ Cancel", callback_data: "admin_menu" }],
+            ]}}
+          );
+        } catch (e: any) {
+          await bot!.editMessageText(`❌ AI error: ${e.message}`, { chat_id: chatId, message_id: thinking.message_id });
+        }
+        return;
+      }
+
+      // Admin: AI Image Blast — waiting for prompt
+      if (state.step === "admin_ai_image_prompt" && userId === adminId) {
+        const prompt = msg.text?.trim();
+        if (!prompt) return;
+        userStates.delete(userId);
+        const thinking = await bot!.sendMessage(chatId, `🎨 _AI image bana raha hai... thoda wait karo._`, { parse_mode: "Markdown" });
+        try {
+          const imgBuffer = await generateImage(prompt);
+          userStates.set(userId, { step: "admin_ai_image_ready", aiPrompt: prompt });
+          await bot!.deleteMessage(chatId, thinking.message_id);
+          await bot!.sendPhoto(chatId, imgBuffer, {
+            caption: `🎨 *AI Generated Image*\n📝 Prompt: _${prompt}_\n\nKya yeh image sabko bhejein?`,
+            parse_mode: "Markdown",
+            reply_markup: { inline_keyboard: [
+              [{ text: "✅ Haan, Sabko Bhejo!", callback_data: "admin_blast_ai_image_confirm" }],
+              [{ text: "🔄 Dobara Generate Karo", callback_data: "admin_ai_image" }],
+              [{ text: "❌ Cancel", callback_data: "admin_menu" }],
+            ]},
+          });
+        } catch (e: any) {
+          await bot!.editMessageText(`❌ Image generation failed: ${e.message}`, { chat_id: chatId, message_id: thinking.message_id });
+        }
         return;
       }
 
@@ -453,6 +581,31 @@ export async function initBot() {
         }
         await submitPayment(chatId, userId, msg.from?.username || "", msg.from?.first_name || "", utr, state);
         userStates.delete(userId);
+      }
+    });
+
+    // ─── Smart AI Auto-Reply for VIP Members ───────────────────────────────
+    bot.on("message", async (msg) => {
+      if (!msg.text || msg.text.startsWith("/")) return;
+      const chatId = msg.chat.id;
+      const userId = String(msg.from?.id);
+      const state = userStates.get(userId);
+      if (state) return;
+
+      const members = await storage.getMembers();
+      const isVip = members.some(m => m.telegramUserId === userId && m.status === "active");
+      if (!isVip) return;
+
+      const thinking = await bot!.sendMessage(chatId, `🤖 _AI jawab de raha hai..._`, { parse_mode: "Markdown" });
+      try {
+        const reply = await askAI(msg.text,
+          "You are a helpful assistant for VIP members of an exclusive Telegram group. Answer in Hindi/Hinglish mix. Be concise, friendly, and use emojis. Keep answer under 150 words."
+        );
+        await bot!.editMessageText(`🤖 ${reply}`, {
+          chat_id: chatId, message_id: thinking.message_id, parse_mode: "Markdown",
+        });
+      } catch (e: any) {
+        await bot!.deleteMessage(chatId, thinking.message_id).catch(() => {});
       }
     });
 
@@ -1136,6 +1289,91 @@ export async function initBot() {
               { parse_mode: "Markdown" }
             );
           } catch (e) {}
+        }
+
+        // ── Admin AI Broadcast Writer ──
+        else if (data === "admin_ai_broadcast") {
+          if (userId !== adminId) return;
+          userStates.set(userId, { step: "admin_ai_broadcast_topic" });
+          try {
+            await bot!.editMessageText(
+              `🤖 *AI Broadcast Writer*\n━━━━━━━━━━━━━━━━━━━━\nKaunse topic par broadcast likhna hai?\n\n_Example: "Weekend special offer", "New content available", "Motivation for members"_\n\n✍️ Topic bhejo:`,
+              { chat_id: chatId, message_id: msgId, parse_mode: "Markdown",
+                reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "admin_cancel_state" }]] } }
+            );
+          } catch (_) {
+            await bot!.sendMessage(chatId, `🤖 *AI Broadcast Writer*\n\nKaunse topic par broadcast likhna hai?`,
+              { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "admin_cancel_state" }]] } }
+            );
+          }
+        }
+
+        // ── Admin AI Image Blast ──
+        else if (data === "admin_ai_image") {
+          if (userId !== adminId) return;
+          userStates.set(userId, { step: "admin_ai_image_prompt" });
+          try {
+            await bot!.editMessageText(
+              `🎨 *AI Image Blast*\n━━━━━━━━━━━━━━━━━━━━\nKaunsi image banani hai? Describe karo:\n\n_Example: "VIP gold coins with fire background", "Motivational quote poster in Hindi"_\n\n✍️ Prompt bhejo:`,
+              { chat_id: chatId, message_id: msgId, parse_mode: "Markdown",
+                reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "admin_cancel_state" }]] } }
+            );
+          } catch (_) {
+            await bot!.sendMessage(chatId, `🎨 *AI Image Blast*\n\nKaunsi image banani hai? Describe karo:`,
+              { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "admin_cancel_state" }]] } }
+            );
+          }
+        }
+
+        // ── Send AI broadcast after admin confirms ──
+        else if (data === "admin_send_ai_broadcast_confirm") {
+          if (userId !== adminId) return;
+          const state = userStates.get(userId);
+          const msgText = state?.aiMessage;
+          userStates.delete(userId);
+          if (!msgText) {
+            await bot!.sendMessage(chatId, `❌ AI message expired. Please generate again.`, { reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] } });
+            return;
+          }
+          const activeMembers = (await storage.getMembers()).filter(m => m.status === "active");
+          let sent = 0, failed = 0;
+          for (const m of activeMembers) {
+            try { await bot!.sendMessage(Number(m.telegramUserId), msgText, { parse_mode: "Markdown" }); sent++; }
+            catch (e) { failed++; }
+          }
+          await bot!.sendMessage(chatId,
+            `✅ *AI Broadcast Sent!*\n\n📤 Sent: *${sent}*\n❌ Failed: *${failed}*`,
+            { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] } }
+          );
+        }
+
+        // ── Send AI image blast after admin confirms ──
+        else if (data === "admin_blast_ai_image_confirm") {
+          if (userId !== adminId) return;
+          const state = userStates.get(userId);
+          const prompt = state?.aiPrompt;
+          userStates.delete(userId);
+          if (!prompt) {
+            await bot!.sendMessage(chatId, `❌ AI prompt expired. Please generate again.`, { reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] } });
+            return;
+          }
+          const generating = await bot!.sendMessage(chatId, `🎨 _Image bana raha hai sabke liye..._`, { parse_mode: "Markdown" });
+          try {
+            const imgBuffer = await generateImage(prompt);
+            await bot!.deleteMessage(chatId, generating.message_id);
+            const activeMembers = (await storage.getMembers()).filter(m => m.status === "active");
+            let sent = 0, failed = 0;
+            for (const m of activeMembers) {
+              try { await bot!.sendPhoto(Number(m.telegramUserId), imgBuffer, { caption: `🎨 *VIP Exclusive Content*`, parse_mode: "Markdown" }); sent++; }
+              catch (e) { failed++; }
+            }
+            await bot!.sendMessage(chatId,
+              `✅ *AI Image Blast Complete!*\n\n📤 Sent: *${sent}*\n❌ Failed: *${failed}*`,
+              { parse_mode: "Markdown", reply_markup: { inline_keyboard: [[{ text: "◀ Back to Panel", callback_data: "admin_menu" }]] } }
+            );
+          } catch (e: any) {
+            await bot!.editMessageText(`❌ Image blast failed: ${e.message}`, { chat_id: chatId, message_id: generating.message_id });
+          }
         }
 
         else if (data === "admin_cancel_state") {
