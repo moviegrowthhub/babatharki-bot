@@ -131,8 +131,8 @@ export async function handleWebhookUpdate(update: any) {
 }
 
 export async function initBot() {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const adminId = process.env.TELEGRAM_ADMIN_ID;
+  const token = process.env.8477512161:AAGFe44Sykbnd0_Vt2FopIWsFEIEoFrOOrs;
+  const adminId = process.env.7516590765;
 
   if (!token) {
     console.log("[Bot] TELEGRAM_BOT_TOKEN not set — bot not started.");
