@@ -794,15 +794,31 @@ export async function initBot() {
             return;
           }
           await storage.updateMemberStatus(member.id, "banned");
-          try { await bot!.banChatMember(member.channelId, Number(member.telegramUserId)); } catch (e) {}
+
+          let kickedFromGroup = false;
+          let kickError = "";
+          try {
+            await bot!.banChatMember(member.channelId, Number(member.telegramUserId));
+            kickedFromGroup = true;
+            console.log(`[Bot] ✅ Banned & removed from group: ${member.telegramUserId}`);
+          } catch (e: any) {
+            kickError = e.message || "Unknown error";
+            console.error(`[Bot] ❌ Failed to remove from group: ${kickError}`);
+          }
+
           try {
             await bot!.sendMessage(Number(member.telegramUserId),
               `🚫 *Aapki VIP membership cancel kar di gayi hai.*\n\nKisi galti ke liye admin se contact karein.`,
               { parse_mode: "Markdown" }
             );
           } catch (e) {}
+
+          const groupStatus = kickedFromGroup
+            ? `✅ Group se remove kar diya gaya hai.`
+            : `⚠️ Group se remove nahi hua!\n_Error: ${kickError}_\n\n📌 Check karo ki bot group ka admin hai aur "Ban Users" permission hai.`;
+
           await bot!.sendMessage(chatId,
-            `✅ *Member Banned!*\n\n👤 *${member.firstName || "Unknown"}*${member.username ? ` (@${member.username})` : ""}\n🆔 ID: \`${member.telegramUserId}\`\n\nGroup se remove kar diya gaya hai.`,
+            `🚫 *Member Banned!*\n\n👤 *${member.firstName || "Unknown"}*${member.username ? ` (@${member.username})` : ""}\n🆔 ID: \`${member.telegramUserId}\`\n\n${groupStatus}`,
             { parse_mode: "Markdown", reply_markup: { inline_keyboard: [
               [{ text: "🚫 Ban Another", callback_data: "admin_banlist" }],
               [{ text: "◀ Back to Panel", callback_data: "admin_menu" }],
