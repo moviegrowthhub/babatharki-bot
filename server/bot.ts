@@ -63,6 +63,14 @@ async function sendAdminPanel(chatId: number, editMsgId?: number) {
         { text: "➕ Add Member", callback_data: "admin_addmember" },
       ],
       [
+        { text: "🗑 Delete Member", callback_data: "admin_deletelist" },
+        { text: "📅 Extend Days", callback_data: "admin_extendlist" },
+      ],
+      [
+        { text: "📦 Plans Manager", callback_data: "admin_plans" },
+        { text: "📨 DM Member", callback_data: "admin_dmlist" },
+      ],
+      [
         { text: "📢 Broadcast", callback_data: "admin_broadcast" },
         { text: "💰 Revenue Report", callback_data: "admin_revenue" },
       ],
@@ -71,7 +79,7 @@ async function sendAdminPanel(chatId: number, editMsgId?: number) {
         { text: "🎨 AI Image Blast", callback_data: "admin_ai_image" },
       ],
       [
-        { text: "⚙️ Settings", callback_data: "admin_settings" },
+        { text: "⚙️ Edit Settings", callback_data: "admin_settings" },
         { text: "🔄 Refresh", callback_data: "admin_menu" },
       ],
     ],
