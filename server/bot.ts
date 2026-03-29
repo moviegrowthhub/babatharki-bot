@@ -2,6 +2,8 @@ import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import { storage } from "./storage";
 import { askAI, generateImage, writeBroadcastMessage } from "./ai";
+import { db } from "./db";
+import { sql } from "drizzle-orm";
 import path from "path";
 import fs from "fs";
 
@@ -146,6 +148,23 @@ export async function initBot() {
   if (!token) {
     console.log("[Bot] TELEGRAM_BOT_TOKEN not set — bot not started.");
     return;
+  }
+
+  // ── Database connectivity guard ─────────────────────────────────────────────
+  // Verify the database is reachable before starting polling/webhook. If the
+  // DB is down, starting the bot would succeed but every handler would fail,
+  // and — worse — a second deploy would trigger a 409 Conflict because the
+  // first instance is still polling while the second tries to start.
+  try {
+    await db.execute(sql`SELECT 1`);
+    console.log("[Bot] Database connection verified.");
+  } catch (err: any) {
+    console.error(
+      "[Bot] FATAL: Cannot connect to the database — bot will not start. " +
+      "Fix DATABASE_URL and redeploy.\n" +
+      (err?.message || err)
+    );
+    process.exit(1);
   }
 
   const isProd = process.env.NODE_ENV === "production";
