@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { verifyPaymentAndAddMember, getBot, handleWebhookUpdate } from "./bot";
 import { insertChannelSchema, insertPlanSchema } from "@shared/schema";
 import { z } from "zod";
+import { writeBroadcastMessage } from "./ai";
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   // Telegram webhook endpoint (production mode)
@@ -247,6 +248,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { key, value } = req.body;
     await storage.setSetting(key, value);
     res.json({ ok: true });
+  });
+
+  // AI generate broadcast message
+  app.post("/api/ai-broadcast", async (req, res) => {
+    try {
+      const { topic } = req.body;
+      if (!topic) return res.status(400).json({ error: "Topic required" });
+      const message = await writeBroadcastMessage(topic);
+      res.json({ message });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "AI generation failed" });
+    }
   });
 
   // Broadcast message

@@ -186,11 +186,27 @@ export async function initBot() {
         bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
       }
     } else {
-      // Development: use polling
+      // Development: use polling — first delete any existing webhook/polling to avoid 409
+      const tempBot = new TelegramBot(token, { polling: false });
+      try {
+        await (tempBot as any).deleteWebHook({ drop_pending_updates: false });
+        console.log("[Bot] Cleared existing webhook/polling connections.");
+      } catch (e: any) {
+        console.log("[Bot] Webhook clear skipped:", e.message);
+      }
+      // Small delay to let Telegram release the polling lock
+      await new Promise(r => setTimeout(r, 2000));
+
       bot = new TelegramBot(token, {
         polling: { params: { allowed_updates: JSON.stringify(allowedUpdates) } as any },
       });
-      bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
+      bot.on("polling_error", (err) => {
+        if (err.message?.includes("409")) {
+          console.warn("[Bot] 409 Conflict — another instance may be running. Will retry...");
+        } else {
+          console.error("[Bot] Polling error:", err.message);
+        }
+      });
     }
     console.log(`[Bot] Started successfully (${isProd ? "webhook" : "polling"} mode).`);
 
