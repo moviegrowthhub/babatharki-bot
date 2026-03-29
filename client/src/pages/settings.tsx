@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Settings2, Bot, IndianRupee, Save, AlertTriangle, Bitcoin, Copy, CheckCircle } from "lucide-react";
+import { Settings2, Bot, IndianRupee, Save, Bitcoin, Copy, CheckCircle } from "lucide-react";
 import { useState, useEffect } from "react";
 import upiQrPath from "@assets/image_1774286558077.jpg";
 
@@ -62,13 +62,13 @@ export default function Settings() {
         <p className="text-sm text-muted-foreground mt-0.5">Configure payment methods and bot settings</p>
       </div>
 
-      {/* Security Warning */}
-      <div className="flex items-start gap-3 p-4 rounded-md bg-yellow-400/5 border border-yellow-400/20">
-        <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
+      {/* Info Banner */}
+      <div className="flex items-start gap-3 p-4 rounded-md bg-primary/5 border border-primary/20">
+        <Bot className="w-4 h-4 text-primary shrink-0 mt-0.5" />
         <div className="text-sm">
-          <p className="font-medium text-yellow-400">Security Reminder</p>
+          <p className="font-medium text-primary">@babatharki_bot — Active</p>
           <p className="text-muted-foreground text-xs mt-1">
-            Your bot token was shared publicly. Please ensure you've revoked the old token via @BotFather and the new one is saved in Replit Secrets.
+            Bot token aur Admin ID securely Replit Secrets mein save hain. UPI ID aur Bitcoin address neeche update karo.
           </p>
         </div>
       </div>

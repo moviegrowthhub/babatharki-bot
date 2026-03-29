@@ -2,6 +2,8 @@ import TelegramBot from "node-telegram-bot-api";
 import cron from "node-cron";
 import { storage } from "./storage";
 import { askAI, generateImage, writeBroadcastMessage } from "./ai";
+import { db } from "./db";
+import { sql } from "drizzle-orm";
 import path from "path";
 import fs from "fs";
 
@@ -148,6 +150,23 @@ export async function initBot() {
     return;
   }
 
+  // ── Database connectivity guard ─────────────────────────────────────────────
+  // Verify the database is reachable before starting polling/webhook. If the
+  // DB is down, starting the bot would succeed but every handler would fail,
+  // and — worse — a second deploy would trigger a 409 Conflict because the
+  // first instance is still polling while the second tries to start.
+  try {
+    await db.execute(sql`SELECT 1`);
+    console.log("[Bot] Database connection verified.");
+  } catch (err: any) {
+    console.error(
+      "[Bot] FATAL: Cannot connect to the database — bot will not start. " +
+      "Fix DATABASE_URL and redeploy.\n" +
+      (err?.message || err)
+    );
+    process.exit(1);
+  }
+
   const isProd = process.env.NODE_ENV === "production";
 
   const allowedUpdates = ["message", "callback_query", "chat_member", "my_chat_member"];
@@ -167,11 +186,27 @@ export async function initBot() {
         bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
       }
     } else {
-      // Development: use polling
+      // Development: use polling — first delete any existing webhook/polling to avoid 409
+      const tempBot = new TelegramBot(token, { polling: false });
+      try {
+        await (tempBot as any).deleteWebHook({ drop_pending_updates: false });
+        console.log("[Bot] Cleared existing webhook/polling connections.");
+      } catch (e: any) {
+        console.log("[Bot] Webhook clear skipped:", e.message);
+      }
+      // Small delay to let Telegram release the polling lock
+      await new Promise(r => setTimeout(r, 2000));
+
       bot = new TelegramBot(token, {
         polling: { params: { allowed_updates: JSON.stringify(allowedUpdates) } as any },
       });
-      bot.on("polling_error", (err) => console.error("[Bot] Polling error:", err.message));
+      bot.on("polling_error", (err) => {
+        if (err.message?.includes("409")) {
+          console.warn("[Bot] 409 Conflict — another instance may be running. Will retry...");
+        } else {
+          console.error("[Bot] Polling error:", err.message);
+        }
+      });
     }
     console.log(`[Bot] Started successfully (${isProd ? "webhook" : "polling"} mode).`);
 

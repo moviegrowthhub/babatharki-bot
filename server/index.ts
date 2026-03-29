@@ -186,16 +186,26 @@ process.on("uncaughtException", (err: any) => {
 });
 
 (async () => {
+  // ── Database startup ────────────────────────────────────────────────────────
+  // Migrations must succeed before the bot starts. If the database is
+  // unreachable (e.g. DATABASE_URL is wrong) we exit immediately so Railway
+  // restarts the service with a clear error rather than letting the bot start
+  // polling and producing a 409 Conflict from multiple instances.
   try {
     await runMigrations();
     await seedData();
-  } catch (err) {
-    console.error("Migration error:", err);
+  } catch (err: any) {
+    console.error(
+      "[Startup] FATAL: Database migration/seed failed — " +
+      "check that DATABASE_URL points to a reachable PostgreSQL instance.\n" +
+      (err?.message || err)
+    );
+    process.exit(1);
   }
 
   await registerRoutes(httpServer, app);
 
-  // Start Telegram bot
+  // Start Telegram bot only after the database is confirmed healthy.
   await initBot();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
